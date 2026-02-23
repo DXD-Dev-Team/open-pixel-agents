@@ -1,4 +1,17 @@
-# Pixel Agents
+# Pixel Agents (OpenCode Fork)
+
+> **🔄 OpenCode 호환 작업 중**
+>
+> 원래 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)용으로 제작된 Pixel Agents를 [OpenCode](https://github.com/nichochar/opencode)에서도 사용할 수 있도록 포크하여 작업하고 있습니다.
+>
+> **참여할 사람은 같이하자~** 🙌 이슈나 PR 환영합니다.
+
+---
+
+<details>
+<summary><b>📋 원본 프로젝트 소개 (클릭하여 펼치기)</b></summary>
+
+# Pixel Agents (원본)
 
 A VS Code extension that turns your AI coding agents into animated pixel art characters in a virtual office.
 
@@ -131,3 +144,5 @@ If you find Pixel Agents useful, consider supporting its development:
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+</details>
