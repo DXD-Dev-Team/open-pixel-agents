@@ -1,17 +1,17 @@
 {
-  "name": "pixel-agents",
-  "displayName": "Pixel Agents",
-  "description": "Pixel art office where your Claude Code agents come to life as animated characters",
+  "name": "open-pixel-agents",
+  "displayName": "Open Pixel Agents",
+  "description": "Pixel art office where your OpenCode agents come to life as animated characters",
   "version": "1.0.0",
-  "publisher": "pablodelucca",
+  "publisher": "inkbottle",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pablodelucca/pixel-agents"
+    "url": "https://github.com/inkbottle/open-pixel-agents"
   },
   "icon": "icon.png",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.50.0"
   },
   "categories": [
     "Other"
@@ -65,7 +65,7 @@
     "@anthropic-ai/sdk": "^0.74.0",
     "@types/node": "22.x",
     "@types/pngjs": "^6.0.5",
-    "@types/vscode": "^1.109.0",
+    "@types/vscode": "^1.50.0",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
     "npm-run-all": "^4.1.5",

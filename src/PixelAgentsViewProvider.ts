@@ -12,11 +12,14 @@ import {
 	sendLayout,
 	getProjectDirPath,
 } from './agentManager.js';
-import { ensureProjectScan } from './fileWatcher.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
 import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
+import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
+import { OpenCodeRuntimeAdapter } from './runtime/openCodeRuntimeAdapter.js';
+import { processOpenCodeEvent, replayOpenCodeSessionState } from './opencodeEventBridge.js';
+import { resetOpenCodeServerTerminal } from './opencodeClient.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	nextAgentId = { current: 1 };
@@ -24,25 +27,24 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	agents = new Map<number, AgentState>();
 	webviewView: vscode.WebviewView | undefined;
 
-	// Per-agent timers
-	fileWatchers = new Map<number, fs.FSWatcher>();
-	pollingTimers = new Map<number, ReturnType<typeof setInterval>>();
 	waitingTimers = new Map<number, ReturnType<typeof setTimeout>>();
-	jsonlPollTimers = new Map<number, ReturnType<typeof setInterval>>();
 	permissionTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
-	// /clear detection: project-level scan for new JSONL files
 	activeAgentId = { current: null as number | null };
-	knownJsonlFiles = new Set<string>();
-	projectScanTimer = { current: null as ReturnType<typeof setInterval> | null };
 
 	// Bundled default layout (loaded from assets/default-layout.json)
 	defaultLayout: Record<string, unknown> | null = null;
 
 	// Cross-window layout sync
 	layoutWatcher: LayoutWatcher | null = null;
+	runtimeEvents: { dispose: () => void } | null = null;
+	readonly output = vscode.window.createOutputChannel('Pixel Agents');
+	sessionParents = new Map<string, number>();
 
-	constructor(private readonly context: vscode.ExtensionContext) {}
+	constructor(
+		private readonly context: vscode.ExtensionContext,
+		private readonly runtime: RuntimeAdapter = new OpenCodeRuntimeAdapter(),
+	) {}
 
 	private get extensionUri(): vscode.Uri {
 		return this.context.extensionUri;
@@ -62,13 +64,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 
 		webviewView.webview.onDidReceiveMessage(async (message) => {
-			if (message.type === 'openClaude') {
-				launchNewTerminal(
+			if (message.type === 'openAgentSession') {
+				await launchNewTerminal(
+					this.runtime,
 					this.nextAgentId, this.nextTerminalIndex,
-					this.agents, this.activeAgentId, this.knownJsonlFiles,
-					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-					this.jsonlPollTimers, this.projectScanTimer,
-					this.webview, this.persistAgents,
+					this.agents, this.activeAgentId, this.waitingTimers, this.permissionTimers,
+					this.webview, this.persistAgents, message.folderPath as string | undefined, this.output,
 				);
 			} else if (message.type === 'focusAgent') {
 				const agent = this.agents.get(message.id);
@@ -90,31 +91,40 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			} else if (message.type === 'setSoundEnabled') {
 				this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
 			} else if (message.type === 'webviewReady') {
+				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+				if (workspaceRoot) {
+					try {
+						await this.runtime.ensureServer(workspaceRoot, this.output);
+					} catch (error) {
+						this.output.appendLine(`[Pixel Agents] Failed to start OpenCode server: ${String(error)}`);
+						void vscode.window.showErrorMessage('Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Pixel Agents output logs.');
+					}
+				}
+				this.startRuntimeEvents();
 				restoreAgents(
 					this.context,
 					this.nextAgentId, this.nextTerminalIndex,
-					this.agents, this.knownJsonlFiles,
-					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-					this.jsonlPollTimers, this.projectScanTimer, this.activeAgentId,
+					this.agents, this.waitingTimers, this.permissionTimers,
 					this.webview, this.persistAgents,
 				);
 				// Send persisted settings to webview
 				const soundEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true);
 				this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled });
+				const workspaceFolders = vscode.workspace.workspaceFolders;
+				if (workspaceFolders && workspaceFolders.length > 1) {
+					this.webview?.postMessage({
+						type: 'workspaceFolders',
+						folders: workspaceFolders.map((folder) => ({
+							name: folder.name,
+							path: folder.uri.fsPath,
+						})),
+					});
+				}
 
-				// Ensure project scan runs even with no restored agents (to adopt external terminals)
 				const projectDir = getProjectDirPath();
-				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 				console.log('[Extension] workspaceRoot:', workspaceRoot);
 				console.log('[Extension] projectDir:', projectDir);
 				if (projectDir) {
-					ensureProjectScan(
-						projectDir, this.knownJsonlFiles, this.projectScanTimer, this.activeAgentId,
-						this.nextAgentId, this.agents,
-						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-						this.webview, this.persistAgents,
-					);
-
 					// Load furniture assets BEFORE sending layout
 					(async () => {
 						try {
@@ -238,7 +248,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					filters: { 'JSON Files': ['json'] },
 					canSelectMany: false,
 				});
-				if (!uris || uris.length === 0) return;
+				if (!uris || uris.length === 0) {
+					return;
+				}
 				try {
 					const raw = fs.readFileSync(uris[0].fsPath, 'utf-8');
 					const imported = JSON.parse(raw) as Record<string, unknown>;
@@ -258,7 +270,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 		vscode.window.onDidChangeActiveTerminal((terminal) => {
 			this.activeAgentId.current = null;
-			if (!terminal) return;
+			if (!terminal) {
+				return;
+			}
 			for (const [id, agent] of this.agents) {
 				if (agent.terminalRef === terminal) {
 					this.activeAgentId.current = id;
@@ -269,6 +283,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		});
 
 		vscode.window.onDidCloseTerminal((closed) => {
+			resetOpenCodeServerTerminal(closed);
 			for (const [id, agent] of this.agents) {
 				if (agent.terminalRef === closed) {
 					if (this.activeAgentId.current === id) {
@@ -276,13 +291,59 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					}
 					removeAgent(
 						id, this.agents,
-						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-						this.jsonlPollTimers, this.persistAgents,
+						this.waitingTimers, this.permissionTimers,
+						this.persistAgents,
 					);
 					webviewView.webview.postMessage({ type: 'agentClosed', id });
 				}
 			}
 		});
+	}
+
+	private startRuntimeEvents(): void {
+		if (this.runtimeEvents) {
+			return;
+		}
+		this.runtimeEvents = this.runtime.subscribeToEvents(
+			(event) => {
+				processOpenCodeEvent(
+					event,
+					this.agents,
+					this.sessionParents,
+					this.waitingTimers,
+					this.permissionTimers,
+					this.webview,
+				);
+			},
+			(error) => {
+				this.output.appendLine(`[Pixel Agents] OpenCode event stream error: ${String(error)}`);
+			},
+		);
+		void this.refreshInitialRuntimeState();
+	}
+
+	private async refreshInitialRuntimeState(): Promise<void> {
+		try {
+			for (const agent of this.agents.values()) {
+				if (!agent.sessionId) {
+					continue;
+				}
+				const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId);
+				replayOpenCodeSessionState(
+					agent,
+					this.agents,
+					this.sessionParents,
+					this.waitingTimers,
+					this.permissionTimers,
+					this.webview,
+					snapshot.status,
+					snapshot.messages,
+					snapshot.children,
+				);
+			}
+		} catch (error) {
+			this.output.appendLine(`[Pixel Agents] Failed to fetch initial OpenCode session statuses: ${String(error)}`);
+		}
 	}
 
 	/** Export current saved layout to webview-ui/public/assets/default-layout.json (dev utility) */
@@ -304,26 +365,27 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private startLayoutWatcher(): void {
-		if (this.layoutWatcher) return;
+		if (this.layoutWatcher) {
+			return;
+		}
 		this.layoutWatcher = watchLayoutFile((layout) => {
 			console.log('[Pixel Agents] External layout change — pushing to webview');
 			this.webview?.postMessage({ type: 'layoutLoaded', layout });
 		});
 	}
 
-	dispose() {
+		dispose() {
+		this.runtimeEvents?.dispose();
+		this.runtimeEvents = null;
+		this.output.dispose();
 		this.layoutWatcher?.dispose();
 		this.layoutWatcher = null;
 		for (const id of [...this.agents.keys()]) {
 			removeAgent(
 				id, this.agents,
-				this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-				this.jsonlPollTimers, this.persistAgents,
+				this.waitingTimers, this.permissionTimers,
+				this.persistAgents,
 			);
-		}
-		if (this.projectScanTimer.current) {
-			clearInterval(this.projectScanTimer.current);
-			this.projectScanTimer.current = null;
 		}
 	}
 }
@@ -334,7 +396,7 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
 
 	let html = fs.readFileSync(indexPath, 'utf-8');
 
-	html = html.replace(/(href|src)="\.\/([^"]+)"/g, (_match, attr, filePath) => {
+	html = html.replace(/(href|src)="\.\/([^"]+)"/g, (_match: string, attr: string, filePath: string) => {
 		const fileUri = vscode.Uri.joinPath(distPath, filePath);
 		const webviewUri = webview.asWebviewUri(fileUri);
 		return `${attr}="${webviewUri}"`;

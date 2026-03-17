@@ -9,7 +9,7 @@ This project is licensed under the [MIT License](LICENSE), so your contributions
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) (LTS recommended)
-- [VS Code](https://code.visualstudio.com/) (v1.109.0 or later)
+- [VS Code](https://code.visualstudio.com/) (v1.50.0 or later)
 
 ### Setup
 
@@ -22,6 +22,16 @@ npm run build
 ```
 
 Then press **F5** in VS Code to launch the Extension Development Host.
+
+### OpenCode Requirement
+
+This fork expects `opencode` to be installed and available on your PATH. You can verify that with:
+
+```bash
+opencode --version
+```
+
+The extension uses `opencode serve` plus the local HTTP/SSE API to drive agent visualization.
 
 ## Development Workflow
 

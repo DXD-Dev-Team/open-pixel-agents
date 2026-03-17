@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import { SettingsModal } from './SettingsModal.js'
+import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js'
+import { vscode } from '../vscodeApi.js'
 
 interface BottomToolbarProps {
   isEditMode: boolean
-  onOpenClaude: () => void
+  onOpenAgentSession: () => void
+  workspaceFolders: WorkspaceFolder[]
   onToggleEditMode: () => void
   isDebugMode: boolean
   onToggleDebugMode: () => void
@@ -43,18 +46,34 @@ const btnActive: React.CSSProperties = {
 
 export function BottomToolbar({
   isEditMode,
-  onOpenClaude,
+  onOpenAgentSession,
+  workspaceFolders,
   onToggleEditMode,
   isDebugMode,
   onToggleDebugMode,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false)
+
+  const handleOpenClick = () => {
+    if (workspaceFolders.length > 1) {
+      setIsFolderPickerOpen((prev) => !prev)
+      return
+    }
+    onOpenAgentSession()
+  }
+
+  const handleSelectFolder = (folderPath: string) => {
+    vscode.postMessage({ type: 'openAgentSession', folderPath })
+    setIsFolderPickerOpen(false)
+  }
 
   return (
     <div style={panelStyle}>
-      <button
-        onClick={onOpenClaude}
+      <div style={{ position: 'relative' }}>
+        <button
+        onClick={handleOpenClick}
         onMouseEnter={() => setHovered('agent')}
         onMouseLeave={() => setHovered(null)}
         style={{
@@ -70,6 +89,36 @@ export function BottomToolbar({
       >
         + Agent
       </button>
+        {isFolderPickerOpen && workspaceFolders.length > 1 && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 'calc(100% + 4px)',
+              left: 0,
+              minWidth: 220,
+              background: 'var(--pixel-bg)',
+              border: '2px solid var(--pixel-border)',
+              boxShadow: 'var(--pixel-shadow)',
+              zIndex: 'var(--pixel-controls-z)',
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 4,
+              gap: 4,
+            }}
+          >
+            {workspaceFolders.map((folder) => (
+              <button
+                key={folder.path}
+                onClick={() => handleSelectFolder(folder.path)}
+                style={{ ...btnBase, textAlign: 'left', fontSize: '20px' }}
+                title={folder.path}
+              >
+                {folder.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <button
         onClick={onToggleEditMode}
         onMouseEnter={() => setHovered('edit')}

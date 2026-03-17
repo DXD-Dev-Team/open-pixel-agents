@@ -1,35 +1,22 @@
 # Pixel Agents (OpenCode Fork)
 
-> **🔄 OpenCode 호환 작업 중**
->
-> 원래 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)용으로 제작된 Pixel Agents를 [OpenCode](https://github.com/nichochar/opencode)에서도 사용할 수 있도록 포크하여 작업하고 있습니다.
->
-> **참여할 사람은 같이하자~** 🙌 이슈나 PR 환영합니다.
+A VS Code extension that turns your OpenCode sessions into animated pixel art characters in a virtual office.
 
----
+Each OpenCode session you launch from the extension spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
 
-<details>
-<summary><b>📋 원본 프로젝트 소개 (클릭하여 펼치기)</b></summary>
-
-# Pixel Agents (원본)
-
-A VS Code extension that turns your AI coding agents into animated pixel art characters in a virtual office.
-
-Each Claude Code terminal you open spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
-
-This is the source code for the free [Pixel Agents extension for VS Code](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents) — you can install it directly from the marketplace with the full furniture catalog included.
+This fork started from the original Pixel Agents project and adapts its visualization model to OpenCode's server API and event stream.
 
 
 ![Pixel Agents screenshot](webview-ui/public/Screenshot.jpg)
 
 ## Features
 
-- **One agent, one character** — every Claude Code terminal gets its own animated character
+- **One session, one character** — every OpenCode session gets its own animated character
 - **Live activity tracking** — characters animate based on what the agent is actually doing (writing, reading, running commands)
 - **Office layout editor** — design your office with floors, walls, and furniture using a built-in editor
 - **Speech bubbles** — visual indicators when an agent is waiting for input or needs permission
 - **Sound notifications** — optional chime when an agent finishes its turn
-- **Sub-agent visualization** — Task tool sub-agents spawn as separate characters linked to their parent
+- **Sub-agent visualization** — OpenCode subtasks and child sessions spawn as separate characters linked to their parent
 - **Persistent layouts** — your office design is saved and shared across VS Code windows
 - **Diverse characters** — 6 diverse characters.
 
@@ -39,12 +26,12 @@ This is the source code for the free [Pixel Agents extension for VS Code](https:
 
 ## Requirements
 
-- VS Code 1.109.0 or later
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+- VS Code 1.50.0 or later
+- [OpenCode CLI](https://github.com/anomalyco/opencode) installed and available on your PATH
 
 ## Getting Started
 
-If you just want to use Pixel Agents, the easiest way is to download the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents). If you want to play with the code, develop, or contribute, then:
+If you want to use, develop, or contribute to this fork:
 
 ### Install from source
 
@@ -61,8 +48,8 @@ Then press **F5** in VS Code to launch the Extension Development Host.
 ### Usage
 
 1. Open the **Pixel Agents** panel (it appears in the bottom panel area alongside your terminal)
-2. Click **+ Agent** to spawn a new Claude Code terminal and its character
-3. Start coding with Claude — watch the character react in real time
+2. Click **+ Agent** to spawn a new OpenCode session and its character
+3. Start coding with OpenCode — watch the character react in real time
 4. Click a character to select it, then click a seat to reassign it
 5. Click **Layout** to open the office editor and customize your space
 
@@ -94,7 +81,15 @@ The extension will still work without the tileset — you'll get the default cha
 
 ## How It Works
 
-Pixel Agents watches Claude Code's JSONL transcript files to track what each agent is doing. When an agent uses a tool (like writing a file or running a command), the extension detects it and updates the character's animation accordingly. No modifications to Claude Code are needed — it's purely observational.
+Pixel Agents talks to OpenCode through its local server API.
+
+When you click **+ Agent**, the extension:
+
+1. Ensures an OpenCode server is running
+2. Creates a new OpenCode session via HTTP
+3. Opens a VS Code terminal attached to that session
+4. Subscribes to OpenCode's SSE event stream
+5. Maps OpenCode session, tool, permission, and subtask events into character animations and UI state
 
 The webview runs a lightweight game loop with canvas rendering, BFS pathfinding, and a character state machine (idle → walk → type/read). Everything is pixel-perfect at integer zoom levels.
 
@@ -105,22 +100,23 @@ The webview runs a lightweight game loop with canvas rendering, BFS pathfinding,
 
 ## Known Limitations
 
-- **Agent-terminal sync** — the way agents are connected to Claude Code terminal instances is not super robust and sometimes desyncs, especially when terminals are rapidly opened/closed or restored across sessions.
-- **Heuristic-based status detection** — Claude Code's JSONL transcript format does not provide clear signals for when an agent is waiting for user input or when it has finished its turn. The current detection is based on heuristics (idle timers, turn-duration events) and often misfires — agents may briefly show the wrong status or miss transitions.
-- **Windows-only testing** — the extension has only been tested on Windows 11. It may work on macOS or Linux, but there could be unexpected issues with file watching, paths, or terminal behavior on those platforms.
+- **Hybrid codebase** — the fork now supports OpenCode at runtime, but parts of the old Claude-oriented architecture still exist internally and need cleanup.
+- **Session restore depth** — restored agents recover session identity and idle/active state, but richer in-flight tool history is not fully replayed yet.
+- **Single-root launch flow** — in multi-root workspaces the extension currently launches agents in the first workspace folder.
+- **Windows-first testing** — the extension has mainly been tested on Windows 11. It may work on macOS or Linux, but there could still be path, terminal, or environment differences.
 
 ## Roadmap
 
 There are several areas where contributions would be very welcome:
 
-- **Improve agent-terminal reliability** — more robust connection and sync between characters and Claude Code instances
-- **Better status detection** — find or propose clearer signals for agent state transitions (waiting, done, permission needed)
+- **Improve session restore** — rebuild richer live tool and subtask state after reloading VS Code
+- **Provider abstraction** — separate OpenCode integration cleanly from any legacy Claude-era implementation details
 - **Community assets** — freely usable pixel art tilesets or characters that anyone can use without purchasing third-party assets
 - **Agent creation and definition** — define agents with custom skills, system prompts, names, and skins before launching them
 - **Desks as directories** — click on a desk to select a working directory, drag and drop agents or click-to-assign to move them to specific desks/projects
-- **Claude Code agent teams** — native support for [agent teams](https://code.claude.com/docs/en/agent-teams), visualizing multi-agent coordination and communication
+- **Multi-root workspace picker** — choose which workspace folder a new OpenCode session should run in
 - **Git worktree support** — agents working in different worktrees to avoid conflict from parallel work on the same files
-- **Support for other agentic frameworks** — [OpenCode](https://github.com/nichochar/opencode), or really any kind of agentic experiment you'd want to run inside a pixel art interface (see [simile.ai](https://simile.ai/) for inspiration)
+- **Support for other agentic frameworks** — beyond OpenCode, adapt the office visualization model to other agent runtimes as well
 
 If any of these interest you, feel free to open an issue or submit a PR.
 
@@ -144,5 +140,3 @@ If you find Pixel Agents useful, consider supporting its development:
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-
-</details>
