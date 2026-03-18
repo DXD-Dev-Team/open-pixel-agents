@@ -192,13 +192,16 @@ export function DebugView({
         background: 'var(--vscode-editor-background)',
         zIndex: DEBUG_Z,
         overflow: 'auto',
+        boxSizing: 'border-box',
+        padding: '12px 16px 12px 12px',
+        scrollbarGutter: 'stable',
         fontFamily: 'var(--vscode-font-family)',
         fontSize: 'var(--vscode-font-size)',
         fontWeight: 'var(--vscode-font-weight)',
       }}
     >
       {/* Top padding so cards don't overlap the floating toolbar */}
-      <div style={{ width: '100%', boxSizing: 'border-box', padding: '12px 12px 12px', fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)' }}>
+      <div style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)' }}>
         <div
           style={{
             width: '100%',
