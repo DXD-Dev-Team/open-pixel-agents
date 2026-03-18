@@ -68,10 +68,11 @@ export function migrateAndLoadLayout(
 	context: ExtensionContext,
 	defaultLayout?: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
+	const defaultIsLegacy = defaultLayout ? isLegacyAssetLayout(defaultLayout) : false;
 	// 1. Try file
 	const fromFile = readLayoutFromFile();
 	if (fromFile) {
-		if (defaultLayout && isLegacyAssetLayout(fromFile)) {
+		if (defaultLayout && !defaultIsLegacy && isLegacyAssetLayout(fromFile)) {
 			console.log('[Pixel Agents] Replacing legacy saved layout with bundled default layout');
 			writeLayoutToFile(defaultLayout);
 			return defaultLayout;
@@ -83,7 +84,7 @@ export function migrateAndLoadLayout(
 	// 2. Migrate from workspace state
 	const fromState = context.workspaceState.get<Record<string, unknown>>(WORKSPACE_KEY_LAYOUT);
 	if (fromState) {
-		if (defaultLayout && isLegacyAssetLayout(fromState)) {
+		if (defaultLayout && !defaultIsLegacy && isLegacyAssetLayout(fromState)) {
 			console.log('[Pixel Agents] Replacing legacy workspace layout with bundled default layout');
 			writeLayoutToFile(defaultLayout);
 			context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);

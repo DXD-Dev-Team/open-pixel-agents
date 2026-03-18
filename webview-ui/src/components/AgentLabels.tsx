@@ -47,9 +47,9 @@ export function AgentLabels({
   const deviceOffsetY = Math.floor((canvasH - mapH) / 2) + Math.round(panRef.current.y)
 
   // Build sub-agent label lookup
-  const subLabelMap = new Map<number, string>()
+  const subLabelMap = new Map<number, SubagentCharacter>()
   for (const sub of subagentCharacters) {
-    subLabelMap.set(sub.id, sub.label)
+    subLabelMap.set(sub.id, sub)
   }
 
   // All character IDs to render labels for (regular agents + sub-agents)
@@ -66,19 +66,24 @@ export function AgentLabels({
         const screenX = (deviceOffsetX + ch.x * zoom) / dpr
         const screenY = (deviceOffsetY + (ch.y + sittingOffset - 24) * zoom) / dpr
 
-        const status = agentStatuses[id]
-        const isWaiting = status === 'waiting'
+        const sub = subLabelMap.get(id)
+        const status = sub?.status || agentStatuses[id]
+        const isWaiting = status === 'waiting' || status === 'completing'
         const isActive = ch.isActive
         const isSub = ch.isSubagent
 
         let dotColor = 'transparent'
         if (isWaiting) {
           dotColor = 'var(--vscode-charts-yellow, #cca700)'
+        } else if (status === 'retry') {
+          dotColor = 'var(--vscode-charts-orange, #d18616)'
         } else if (isActive) {
           dotColor = 'var(--vscode-charts-blue, #3794ff)'
         }
 
-        const labelText = subLabelMap.get(id) || `Agent #${id}`
+        const labelText = sub?.status === 'completing'
+          ? (sub.completionHint || sub.label)
+          : sub?.label || `Agent #${id}`
 
         return (
           <div

@@ -78,6 +78,8 @@ export function createCharacter(
     matrixEffect: null,
     matrixEffectTimer: 0,
     matrixEffectSeeds: [],
+    exiting: false,
+    exitDelayTimer: 0,
   }
 }
 

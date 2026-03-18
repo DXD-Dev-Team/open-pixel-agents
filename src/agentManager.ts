@@ -25,12 +25,12 @@ export async function launchNewTerminal(
 	persistAgents: () => void,
 	folderPath?: string,
 	output?: vscode.OutputChannel,
-): Promise<void> {
+): Promise<AgentState | undefined> {
 	const idx = nextTerminalIndexRef.current++;
 	const cwd = folderPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	if (!cwd) {
 		void vscode.window.showErrorMessage('Pixel Agents: No workspace folder found for OpenCode.');
-		return;
+		return undefined;
 	}
 
 	await runtime.ensureServer(cwd, output);
@@ -39,13 +39,13 @@ export async function launchNewTerminal(
 		name: `${TERMINAL_NAME_PREFIX} #${idx}`,
 		cwd,
 	});
-	terminal.show();
+	terminal.show(true);
 	terminal.sendText(runtime.buildAttachCommand(session.id, cwd));
 
 	const projectDir = getProjectDirPath(cwd);
 	if (!projectDir) {
 		console.log(`[Pixel Agents] No project dir, cannot track agent`);
-		return;
+		return undefined;
 	}
 
 	const id = nextAgentIdRef.current++;
@@ -69,6 +69,7 @@ export async function launchNewTerminal(
 	persistAgents();
 	console.log(`[Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
 	webview?.postMessage({ type: 'agentCreated', id });
+	return agent;
 }
 
 export function removeAgent(

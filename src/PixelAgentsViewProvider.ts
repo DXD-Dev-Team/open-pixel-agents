@@ -18,8 +18,8 @@ import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layout
 import type { LayoutWatcher } from './layoutPersistence.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { OpenCodeRuntimeAdapter } from './runtime/openCodeRuntimeAdapter.js';
-import { processOpenCodeEvent, replayOpenCodeSessionState } from './opencodeEventBridge.js';
 import { resetOpenCodeServerTerminal } from './opencodeClient.js';
+import { RuntimeController } from './runtime/runtimeController.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	nextAgentId = { current: 1 };
@@ -39,7 +39,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	layoutWatcher: LayoutWatcher | null = null;
 	runtimeEvents: { dispose: () => void } | null = null;
 	readonly output = vscode.window.createOutputChannel('Pixel Agents');
-	sessionParents = new Map<string, number>();
+	runtimeController: RuntimeController | null = null;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -58,6 +58,13 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		persistAgents(this.agents, this.context);
 	};
 
+	private get controller(): RuntimeController {
+		if (!this.runtimeController) {
+			this.runtimeController = new RuntimeController(this.runtime, this.agents, () => this.webview);
+		}
+		return this.runtimeController;
+	}
+
 	resolveWebviewView(webviewView: vscode.WebviewView) {
 		this.webviewView = webviewView;
 		webviewView.webview.options = { enableScripts: true };
@@ -65,12 +72,18 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			if (message.type === 'openAgentSession') {
-				await launchNewTerminal(
+				const agent = await launchNewTerminal(
 					this.runtime,
 					this.nextAgentId, this.nextTerminalIndex,
 					this.agents, this.activeAgentId, this.waitingTimers, this.permissionTimers,
 					this.webview, this.persistAgents, message.folderPath as string | undefined, this.output,
 				);
+				if (agent) {
+					this.controller.registerAgent(agent);
+					void this.controller.hydrateAll().catch((error) => {
+						this.output.appendLine(`[Pixel Agents] Failed to hydrate agent runtime state: ${String(error)}`);
+					});
+				}
 			} else if (message.type === 'focusAgent') {
 				const agent = this.agents.get(message.id);
 				if (agent) {
@@ -100,13 +113,15 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						void vscode.window.showErrorMessage('Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Pixel Agents output logs.');
 					}
 				}
-				this.startRuntimeEvents();
 				restoreAgents(
 					this.context,
 					this.nextAgentId, this.nextTerminalIndex,
 					this.agents, this.waitingTimers, this.permissionTimers,
 					this.webview, this.persistAgents,
 				);
+				for (const agent of this.agents.values()) {
+					this.controller.registerAgent(agent);
+				}
 				// Send persisted settings to webview
 				const soundEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true);
 				this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled });
@@ -224,6 +239,10 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					})();
 				}
 				sendExistingAgents(this.agents, this.context, this.webview);
+				await this.controller.hydrateAll().catch((error) => {
+					this.output.appendLine(`[Pixel Agents] Failed to fetch initial OpenCode session statuses: ${String(error)}`);
+				});
+				this.startRuntimeEvents();
 			} else if (message.type === 'openSessionsFolder') {
 				const projectDir = getProjectDirPath();
 				if (projectDir && fs.existsSync(projectDir)) {
@@ -294,6 +313,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						this.waitingTimers, this.permissionTimers,
 						this.persistAgents,
 					);
+					this.runtimeController?.removeAgent(id);
 					webviewView.webview.postMessage({ type: 'agentClosed', id });
 				}
 			}
@@ -306,44 +326,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		}
 		this.runtimeEvents = this.runtime.subscribeToEvents(
 			(event) => {
-				processOpenCodeEvent(
-					event,
-					this.agents,
-					this.sessionParents,
-					this.waitingTimers,
-					this.permissionTimers,
-					this.webview,
-				);
+				this.controller.handleEvent(event);
 			},
 			(error) => {
 				this.output.appendLine(`[Pixel Agents] OpenCode event stream error: ${String(error)}`);
 			},
 		);
-		void this.refreshInitialRuntimeState();
-	}
-
-	private async refreshInitialRuntimeState(): Promise<void> {
-		try {
-			for (const agent of this.agents.values()) {
-				if (!agent.sessionId) {
-					continue;
-				}
-				const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId);
-				replayOpenCodeSessionState(
-					agent,
-					this.agents,
-					this.sessionParents,
-					this.waitingTimers,
-					this.permissionTimers,
-					this.webview,
-					snapshot.status,
-					snapshot.messages,
-					snapshot.children,
-				);
-			}
-		} catch (error) {
-			this.output.appendLine(`[Pixel Agents] Failed to fetch initial OpenCode session statuses: ${String(error)}`);
-		}
 	}
 
 	/** Export current saved layout to webview-ui/public/assets/default-layout.json (dev utility) */
@@ -377,6 +365,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		dispose() {
 		this.runtimeEvents?.dispose();
 		this.runtimeEvents = null;
+		this.runtimeController?.dispose();
+		this.runtimeController = null;
 		this.output.dispose();
 		this.layoutWatcher?.dispose();
 		this.layoutWatcher = null;

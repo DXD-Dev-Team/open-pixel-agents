@@ -4,6 +4,7 @@ import {
   HUE_SHIFT_MIN_DEG,
   HUE_SHIFT_RANGE_DEG,
   WAITING_BUBBLE_DURATION_SEC,
+  DONE_BUBBLE_DURATION_SEC,
   DISMISS_BUBBLE_FAST_FADE_SEC,
   INACTIVE_SEAT_TIMER_MIN_SEC,
   INACTIVE_SEAT_TIMER_RANGE_SEC,
@@ -41,7 +42,7 @@ export class OfficeState {
   /** Maps "parentId:toolId" → sub-agent character ID (negative) */
   subagentIdMap: Map<string, number> = new Map()
   /** Reverse lookup: sub-agent character ID → parent info */
-  subagentMeta: Map<number, { parentAgentId: number; parentToolId: string }> = new Map()
+  subagentMeta: Map<number, { parentAgentId: number; parentToolId: string; sessionId?: string }> = new Map()
   private nextSubagentId = -1
 
   constructor(layout?: OfficeLayout) {
@@ -161,9 +162,77 @@ export class OfficeState {
 
   private findFreeSeat(): string | null {
     for (const [uid, seat] of this.seats) {
+      if (seat.isWorkSeat && !seat.assigned) return uid
+    }
+    for (const [uid, seat] of this.seats) {
       if (!seat.assigned) return uid
     }
     return null
+  }
+
+  private getEntranceTile(): { col: number; row: number } {
+    if (this.walkableTiles.length === 0) {
+      return { col: 1, row: 1 }
+    }
+    const layout = this.getLayout()
+    const targetCol = Math.floor(layout.cols / 2)
+    const targetRow = layout.rows - 1
+    const edgeTiles = this.walkableTiles.filter((tile) =>
+      tile.row === targetRow || tile.col === 0 || tile.col === layout.cols - 1 || tile.row === 0,
+    )
+    const candidates = edgeTiles.length > 0 ? edgeTiles : this.walkableTiles
+    let best = candidates[0]
+    let bestScore = Number.POSITIVE_INFINITY
+    for (const tile of candidates) {
+      const bottomPenalty = tile.row === targetRow ? 0 : 4
+      const score = Math.abs(tile.col - targetCol) + Math.abs(tile.row - targetRow) + bottomPenalty
+      if (score < bestScore) {
+        best = tile
+        bestScore = score
+      }
+    }
+    return best
+  }
+
+  private placeCharacterAtTile(ch: Character, col: number, row: number): void {
+    ch.tileCol = col
+    ch.tileRow = row
+    ch.x = col * TILE_SIZE + TILE_SIZE / 2
+    ch.y = row * TILE_SIZE + TILE_SIZE / 2
+    ch.path = []
+    ch.moveProgress = 0
+  }
+
+  private startWalkingToTile(ch: Character, targetCol: number, targetRow: number): boolean {
+    const path = this.withOwnSeatUnblocked(ch, () =>
+      findPath(ch.tileCol, ch.tileRow, targetCol, targetRow, this.tileMap, this.blockedTiles)
+    )
+    if (path.length === 0) {
+      return false
+    }
+    ch.path = path
+    ch.moveProgress = 0
+    ch.state = CharacterState.WALK
+    ch.frame = 0
+    ch.frameTimer = 0
+    if (path[0]) {
+      const dc = path[0].col - ch.tileCol
+      if (dc > 0) ch.dir = Direction.RIGHT
+      else if (dc < 0) ch.dir = Direction.LEFT
+      else if (path[0].row > ch.tileRow) ch.dir = Direction.DOWN
+      else if (path[0].row < ch.tileRow) ch.dir = Direction.UP
+    }
+    return true
+  }
+
+  private beginExit(ch: Character): void {
+    const exit = this.getEntranceTile()
+    if (!this.startWalkingToTile(ch, exit.col, exit.row)) {
+      ch.matrixEffect = 'despawn'
+      ch.matrixEffectTimer = 0
+      ch.matrixEffectSeeds = matrixEffectSeeds()
+    }
+    ch.exiting = true
   }
 
   /**
@@ -237,9 +306,23 @@ export class OfficeState {
     }
 
     if (!skipSpawnEffect) {
-      ch.matrixEffect = 'spawn'
-      ch.matrixEffectTimer = 0
-      ch.matrixEffectSeeds = matrixEffectSeeds()
+      const entrance = this.getEntranceTile()
+      this.placeCharacterAtTile(ch, entrance.col, entrance.row)
+      let targetCol = ch.tileCol
+      let targetRow = ch.tileRow
+      if (ch.seatId) {
+        const seat = this.seats.get(ch.seatId)
+        if (seat) {
+          targetCol = seat.seatCol
+          targetRow = seat.seatRow
+        }
+      }
+      if (!this.startWalkingToTile(ch, targetCol, targetRow) && ch.seatId) {
+        const seat = this.seats.get(ch.seatId)
+        if (seat) {
+          this.placeCharacterAtTile(ch, seat.seatCol, seat.seatRow)
+        }
+      }
     }
     this.characters.set(id, ch)
   }
@@ -354,7 +437,45 @@ export class OfficeState {
     return true
   }
 
-  /** Create a sub-agent character with the parent's palette. Returns the sub-agent ID. */
+  private immediateRemoveSubagentByKey(key: string): void {
+    const id = this.subagentIdMap.get(key)
+    if (id === undefined) return
+    const ch = this.characters.get(id)
+    if (ch?.seatId) {
+      const seat = this.seats.get(ch.seatId)
+      if (seat) seat.assigned = false
+    }
+    this.characters.delete(id)
+    this.subagentIdMap.delete(key)
+    this.subagentMeta.delete(id)
+    if (this.selectedAgentId === id) this.selectedAgentId = null
+    if (this.cameraFollowId === id) this.cameraFollowId = null
+  }
+
+  setSubagentSessionId(id: number, sessionId: string | undefined): void {
+    const meta = this.subagentMeta.get(id)
+    if (meta) {
+      meta.sessionId = sessionId
+    }
+  }
+
+  rekeySubagent(parentAgentId: number, oldParentToolId: string, newParentToolId: string, sessionId?: string): number | null {
+    const oldKey = `${parentAgentId}:${oldParentToolId}`
+    const newKey = `${parentAgentId}:${newParentToolId}`
+    if (oldKey === newKey) return this.subagentIdMap.get(oldKey) ?? null
+    const id = this.subagentIdMap.get(oldKey)
+    if (id === undefined) return null
+    this.subagentIdMap.delete(oldKey)
+    this.subagentIdMap.set(newKey, id)
+    const meta = this.subagentMeta.get(id)
+    if (meta) {
+      meta.parentToolId = newParentToolId
+      meta.sessionId = sessionId
+    }
+    return id
+  }
+
+  /** Create a sub-agent character with a parent-derived but distinct appearance. Returns the sub-agent ID. */
   addSubagent(parentAgentId: number, parentToolId: string): number {
     const key = `${parentAgentId}:${parentToolId}`
     if (this.subagentIdMap.has(key)) return this.subagentIdMap.get(key)!
@@ -362,7 +483,13 @@ export class OfficeState {
     const id = this.nextSubagentId--
     const parentCh = this.characters.get(parentAgentId)
     const palette = parentCh ? parentCh.palette : 0
-    const hueShift = parentCh ? parentCh.hueShift : 0
+    const baseHue = parentCh ? parentCh.hueShift : 0
+    let hash = 0
+    for (let i = 0; i < parentToolId.length; i++) {
+      hash = ((hash * 31) + parentToolId.charCodeAt(i)) % 360
+    }
+    const derivedOffset = 45 + (hash % 180)
+    const hueShift = (baseHue + derivedOffset) % 360
 
     // Find the free seat closest to the parent agent
     const parentCol = parentCh ? parentCh.tileCol : 0
@@ -410,9 +537,26 @@ export class OfficeState {
     }
     ch.isSubagent = true
     ch.parentAgentId = parentAgentId
-    ch.matrixEffect = 'spawn'
-    ch.matrixEffectTimer = 0
-    ch.matrixEffectSeeds = matrixEffectSeeds()
+
+    const entrance = this.getEntranceTile()
+    this.placeCharacterAtTile(ch, entrance.col, entrance.row)
+    let targetCol = ch.tileCol
+    let targetRow = ch.tileRow
+    if (ch.seatId) {
+      const seat = this.seats.get(ch.seatId)
+      if (seat) {
+        targetCol = seat.seatCol
+        targetRow = seat.seatRow
+      }
+    }
+    if (!this.startWalkingToTile(ch, targetCol, targetRow)) {
+      if (bestSeatId) {
+        const seat = this.seats.get(bestSeatId)
+        if (seat) {
+          this.placeCharacterAtTile(ch, seat.seatCol, seat.seatRow)
+        }
+      }
+    }
     this.characters.set(id, ch)
 
     this.subagentIdMap.set(key, id)
@@ -421,8 +565,12 @@ export class OfficeState {
   }
 
   /** Remove a specific sub-agent character and free its seat */
-  removeSubagent(parentAgentId: number, parentToolId: string): void {
+  removeSubagent(parentAgentId: number, parentToolId: string, immediate = false): void {
     const key = `${parentAgentId}:${parentToolId}`
+    if (immediate) {
+      this.immediateRemoveSubagentByKey(key)
+      return
+    }
     const id = this.subagentIdMap.get(key)
     if (id === undefined) return
 
@@ -438,11 +586,11 @@ export class OfficeState {
         const seat = this.seats.get(ch.seatId)
         if (seat) seat.assigned = false
       }
-      // Start despawn animation — keep character in map for rendering
-      ch.matrixEffect = 'despawn'
-      ch.matrixEffectTimer = 0
-      ch.matrixEffectSeeds = matrixEffectSeeds()
-      ch.bubbleType = null
+      ch.currentTool = null
+      ch.path = []
+      ch.moveProgress = 0
+      ch.exitDelayTimer = DONE_BUBBLE_DURATION_SEC
+      this.showDoneBubble(id)
     }
     // Clean up tracking maps immediately so keys don't collide
     this.subagentIdMap.delete(key)
@@ -469,11 +617,11 @@ export class OfficeState {
             const seat = this.seats.get(ch.seatId)
             if (seat) seat.assigned = false
           }
-          // Start despawn animation
-          ch.matrixEffect = 'despawn'
-          ch.matrixEffectTimer = 0
-          ch.matrixEffectSeeds = matrixEffectSeeds()
-          ch.bubbleType = null
+          ch.currentTool = null
+          ch.path = []
+          ch.moveProgress = 0
+          ch.exitDelayTimer = DONE_BUBBLE_DURATION_SEC
+          this.showDoneBubble(id)
         }
         this.subagentMeta.delete(id)
         if (this.selectedAgentId === id) this.selectedAgentId = null
@@ -597,6 +745,14 @@ export class OfficeState {
     }
   }
 
+  showDoneBubble(id: number): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.bubbleType = 'done'
+      ch.bubbleTimer = DONE_BUBBLE_DURATION_SEC
+    }
+  }
+
   /** Dismiss bubble on click — permission: instant, waiting: quick fade */
   dismissBubble(id: number): void {
     const ch = this.characters.get(id)
@@ -604,7 +760,7 @@ export class OfficeState {
     if (ch.bubbleType === 'permission') {
       ch.bubbleType = null
       ch.bubbleTimer = 0
-    } else if (ch.bubbleType === 'waiting') {
+    } else if (ch.bubbleType === 'waiting' || ch.bubbleType === 'done') {
       // Trigger immediate fade (0.3s remaining)
       ch.bubbleTimer = Math.min(ch.bubbleTimer, DISMISS_BUBBLE_FAST_FADE_SEC)
     }
@@ -630,13 +786,37 @@ export class OfficeState {
         continue // skip normal FSM while effect is active
       }
 
+      if (ch.exitDelayTimer > 0) {
+        ch.exitDelayTimer -= dt
+        if (ch.exitDelayTimer <= 0) {
+          ch.exitDelayTimer = 0
+          this.beginExit(ch)
+        }
+      }
+
+      if (ch.exitDelayTimer > 0) {
+        if (ch.bubbleType === 'waiting' || ch.bubbleType === 'done') {
+          ch.bubbleTimer -= dt
+          if (ch.bubbleTimer <= 0) {
+            ch.bubbleType = null
+            ch.bubbleTimer = 0
+          }
+        }
+        continue
+      }
+
       // Temporarily unblock own seat so character can pathfind to it
       this.withOwnSeatUnblocked(ch, () =>
         updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles)
       )
 
+      if (ch.exiting && ch.path.length === 0 && ch.state !== CharacterState.WALK) {
+        toDelete.push(ch.id)
+        continue
+      }
+
       // Tick bubble timer for waiting bubbles
-      if (ch.bubbleType === 'waiting') {
+      if (ch.bubbleType === 'waiting' || ch.bubbleType === 'done') {
         ch.bubbleTimer -= dt
         if (ch.bubbleTimer <= 0) {
           ch.bubbleType = null

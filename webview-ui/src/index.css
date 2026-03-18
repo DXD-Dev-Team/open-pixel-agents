@@ -7,7 +7,7 @@
 }
 
 :root {
-  --pixel-bg: #1e1e2e;
+  --pixel-bg: #202830;
   --pixel-border: #4a4a6a;
   --pixel-border-light: #6a6a8a;
   --pixel-accent: #5a8cff;
@@ -40,7 +40,7 @@
   --pixel-danger-bg: #a33;
 
   /* Vignette */
-  --pixel-vignette: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.6) 100%);
+  --pixel-vignette: radial-gradient(ellipse at center, transparent 60%, rgba(10, 16, 22, 0.32) 100%);
 
   /* Status dot colors */
   --pixel-status-permission: var(--vscode-charts-yellow, #cca700);

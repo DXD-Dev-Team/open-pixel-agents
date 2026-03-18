@@ -457,6 +457,34 @@ export function renderBubbles(
   for (const ch of characters) {
     if (!ch.bubbleType) continue
 
+    if (ch.bubbleType === 'done') {
+      let alpha = 1.0
+      if (ch.bubbleTimer < BUBBLE_FADE_DURATION_SEC) {
+        alpha = ch.bubbleTimer / BUBBLE_FADE_DURATION_SEC
+      }
+      const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
+      const centerX = Math.round(offsetX + ch.x * zoom)
+      const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - 18 * zoom)
+      const bubbleW = Math.round(26 * zoom)
+      const bubbleH = Math.round(12 * zoom)
+      const bubbleX = Math.round(centerX - bubbleW / 2)
+
+      ctx.save()
+      if (alpha < 1.0) ctx.globalAlpha = alpha
+      ctx.fillStyle = '#202020'
+      ctx.fillRect(bubbleX - zoom, bubbleY - zoom, bubbleW + zoom * 2, bubbleH + zoom * 2)
+      ctx.fillStyle = '#f7f7f2'
+      ctx.fillRect(bubbleX, bubbleY, bubbleW, bubbleH)
+      ctx.fillStyle = '#202020'
+      ctx.fillRect(centerX - zoom, bubbleY + bubbleH, zoom * 2, zoom * 2)
+      ctx.font = `${Math.max(8, Math.round(7 * zoom))}px monospace`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('OK', centerX, bubbleY + bubbleH / 2 + 1)
+      ctx.restore()
+      continue
+    }
+
     const sprite = ch.bubbleType === 'permission'
       ? BUBBLE_PERMISSION_SPRITE
       : BUBBLE_WAITING_SPRITE

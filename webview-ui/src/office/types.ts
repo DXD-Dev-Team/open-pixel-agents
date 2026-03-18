@@ -16,7 +16,9 @@ export const TileType = {
   FLOOR_5: 5,
   FLOOR_6: 6,
   FLOOR_7: 7,
-  VOID: 8,
+  FLOOR_8: 8,
+  FLOOR_9: 9,
+  VOID: 255,
 } as const
 export type TileType = (typeof TileType)[keyof typeof TileType]
 
@@ -61,6 +63,8 @@ export interface Seat {
   seatRow: number
   /** Direction character faces when sitting (toward adjacent desk) */
   facingDir: Direction
+  /** Preferred for active work; typically adjacent to a desk */
+  isWorkSeat: boolean
   assigned: boolean
 }
 
@@ -134,6 +138,7 @@ export interface PlacedFurniture {
 
 export interface OfficeLayout {
   version: 1
+  layoutRevision?: number
   cols: number
   rows: number
   tiles: TileType[]
@@ -178,7 +183,7 @@ export interface Character {
   /** Assigned seat uid, or null if no seat */
   seatId: string | null
   /** Active speech bubble type, or null if none showing */
-  bubbleType: 'permission' | 'waiting' | null
+  bubbleType: 'permission' | 'waiting' | 'done' | null
   /** Countdown timer for bubble (waiting: 2→0, permission: unused) */
   bubbleTimer: number
   /** Timer to stay seated while inactive after seat reassignment (counts down to 0) */
@@ -193,4 +198,8 @@ export interface Character {
   matrixEffectTimer: number
   /** Per-column random seeds (16 values) for staggered rain timing */
   matrixEffectSeeds: number[]
+  /** Whether this character is currently walking out of the scene to be removed */
+  exiting: boolean
+  /** Delay before exit begins, used for completion feedback */
+  exitDelayTimer: number
 }

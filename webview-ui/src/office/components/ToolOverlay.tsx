@@ -105,7 +105,11 @@ export function ToolOverlay({
             activityText = 'Needs approval'
           } else {
             const sub = subagentCharacters.find((s) => s.id === id)
-            activityText = sub ? sub.label : 'Subtask'
+            activityText = sub?.status === 'completing'
+              ? (sub.completionHint || 'Done')
+              : sub?.status === 'retry'
+                ? 'Retrying'
+                : (sub ? sub.label : 'Subtask')
           }
         } else {
           activityText = getActivityText(id, agentTools, ch.isActive)
@@ -120,6 +124,8 @@ export function ToolOverlay({
         let dotColor: string | null = null
         if (hasPermission) {
           dotColor = 'var(--pixel-status-permission)'
+        } else if (isSub && subagentCharacters.find((s) => s.id === id)?.status === 'retry') {
+          dotColor = 'var(--vscode-charts-orange, #d18616)'
         } else if (isActive && hasActiveTools) {
           dotColor = 'var(--pixel-status-active)'
         }

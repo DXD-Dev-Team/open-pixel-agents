@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import type { OfficeState } from '../office/engine/officeState.js'
 import type { OfficeLayout, ToolActivity } from '../office/types.js'
 import { extractToolName } from '../office/toolUtils.js'
@@ -14,7 +15,36 @@ export interface SubagentCharacter {
   id: number
   parentAgentId: number
   parentToolId: string
+  sessionId?: string
   label: string
+  status?: 'active' | 'waiting' | 'retry' | 'completing'
+  completionHint?: string
+}
+
+interface RuntimeToolVm {
+  id: string
+  name: string
+  label: string
+  state: 'pending' | 'running'
+}
+
+interface RuntimeSubagentVm {
+  id: string
+  sessionId: string
+  label: string
+  status: 'active' | 'waiting' | 'retry' | 'completing'
+  permissionAsked: boolean
+  tools: RuntimeToolVm[]
+  completionHint?: string
+}
+
+interface RuntimeAgentVm {
+  agentId: number
+  sessionId: string
+  status: 'active' | 'waiting' | 'retry'
+  permissionAsked: boolean
+  tools: RuntimeToolVm[]
+  subagents: RuntimeSubagentVm[]
 }
 
 export interface FurnitureAsset {
@@ -52,6 +82,89 @@ export interface WorkspaceFolder {
   path: string
 }
 
+function syncRuntimeAgent(
+  os: OfficeState,
+  vm: RuntimeAgentVm,
+  setAgentTools: Dispatch<SetStateAction<Record<number, ToolActivity[]>>>,
+  setAgentStatuses: Dispatch<SetStateAction<Record<number, string>>>,
+  setSubagentTools: Dispatch<SetStateAction<Record<number, Record<string, ToolActivity[]>>>>,
+  setSubagentCharacters: Dispatch<SetStateAction<SubagentCharacter[]>>,
+): void {
+  const agentId = vm.agentId
+  const agentToolList: ToolActivity[] = vm.tools.map((tool) => ({
+    toolId: tool.id,
+    status: tool.label,
+    done: false,
+    permissionWait: vm.permissionAsked,
+  }))
+  setAgentTools((prev) => ({ ...prev, [agentId]: agentToolList }))
+  setAgentStatuses((prev) => ({ ...prev, [agentId]: vm.status }))
+
+  os.setAgentActive(agentId, vm.status !== 'waiting')
+  os.setAgentTool(agentId, vm.tools[0] ? vm.tools[0].name : null)
+  if (vm.permissionAsked) {
+    os.showPermissionBubble(agentId)
+  } else {
+    os.clearPermissionBubble(agentId)
+    if (vm.status === 'waiting') {
+      os.showWaitingBubble(agentId)
+    }
+  }
+
+  const incomingBySessionId = new Map(vm.subagents.filter((sub) => sub.sessionId).map((sub) => [sub.sessionId, sub]))
+  for (const [subId, meta] of os.subagentMeta) {
+    if (meta.parentAgentId !== agentId) continue
+    const existingChar = os.characters.get(subId)
+    if (existingChar?.isSubagent && meta.sessionId) {
+      const incoming = incomingBySessionId.get(meta.sessionId)
+      if (incoming && incoming.id !== meta.parentToolId) {
+        os.rekeySubagent(agentId, meta.parentToolId, incoming.id, meta.sessionId)
+      }
+    }
+  }
+
+  const currentSubs = new Set(vm.subagents.map((sub) => sub.id))
+  for (const [, meta] of os.subagentMeta) {
+    if (meta.parentAgentId !== agentId) continue
+    if (!currentSubs.has(meta.parentToolId)) {
+      os.removeSubagent(agentId, meta.parentToolId)
+    }
+  }
+
+  const nextSubagentTools: Record<string, ToolActivity[]> = {}
+  const nextCharacters: SubagentCharacter[] = []
+  for (const sub of vm.subagents) {
+    const subKey = sub.id
+    const subId = os.addSubagent(agentId, subKey)
+    os.setSubagentSessionId(subId, sub.sessionId || undefined)
+    nextCharacters.push({ id: subId, parentAgentId: agentId, parentToolId: subKey, sessionId: sub.sessionId || undefined, label: sub.label, status: sub.status, completionHint: sub.completionHint })
+    nextSubagentTools[subKey] = sub.tools.map((tool) => ({
+      toolId: tool.id,
+      status: tool.label,
+      done: false,
+      permissionWait: sub.permissionAsked,
+    }))
+    os.setAgentTool(subId, sub.tools[0] ? sub.tools[0].name : null)
+    os.setAgentActive(subId, sub.status === 'active' || sub.status === 'retry')
+    if (sub.permissionAsked) {
+      os.showPermissionBubble(subId)
+    } else {
+      os.clearPermissionBubble(subId)
+      if (sub.status === 'completing') {
+        os.showDoneBubble(subId)
+      } else if (sub.status === 'waiting') {
+        os.showWaitingBubble(subId)
+      }
+    }
+  }
+
+  setSubagentTools((prev) => ({ ...prev, [agentId]: nextSubagentTools }))
+  setSubagentCharacters((prev) => {
+    const keep = prev.filter((item) => item.parentAgentId !== agentId)
+    return [...keep, ...nextCharacters]
+  })
+}
+
 function saveAgentSeats(os: OfficeState): void {
   const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {}
   for (const ch of os.characters.values()) {
@@ -78,10 +191,12 @@ export function useExtensionMessages(
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false)
+  const runtimeV2Ref = useRef(false)
 
   useEffect(() => {
     // Buffer agents from existingAgents until layout is loaded
     let pendingAgents: Array<{ id: number; palette?: number; hueShift?: number; seatId?: string }> = []
+    let pendingRuntime: RuntimeAgentVm[] | null = null
 
     const handler = (e: MessageEvent) => {
       const msg = e.data
@@ -111,6 +226,12 @@ export function useExtensionMessages(
         setLayoutReady(true)
         if (os.characters.size > 0) {
           saveAgentSeats(os)
+        }
+        if (pendingRuntime) {
+          for (const agent of pendingRuntime) {
+            syncRuntimeAgent(os, agent, setAgentTools, setAgentStatuses, setSubagentTools, setSubagentCharacters)
+          }
+          pendingRuntime = null
         }
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number
@@ -164,7 +285,27 @@ export function useExtensionMessages(
         })
       } else if (msg.type === 'workspaceFolders') {
         setWorkspaceFolders((msg.folders as WorkspaceFolder[]) || [])
+      } else if (msg.type === 'runtimeSnapshot') {
+        runtimeV2Ref.current = true
+        const incoming = (msg.agents as RuntimeAgentVm[]) || []
+        if (!layoutReadyRef.current) {
+          pendingRuntime = incoming
+          return
+        }
+        for (const agent of incoming) {
+          syncRuntimeAgent(os, agent, setAgentTools, setAgentStatuses, setSubagentTools, setSubagentCharacters)
+        }
+      } else if (msg.type === 'agentRuntimeReplace') {
+        runtimeV2Ref.current = true
+        const agent = msg.agent as RuntimeAgentVm
+        if (!layoutReadyRef.current) {
+          pendingRuntime = pendingRuntime || []
+          pendingRuntime = [...pendingRuntime.filter((item) => item.agentId !== agent.agentId), agent]
+          return
+        }
+        syncRuntimeAgent(os, agent, setAgentTools, setAgentStatuses, setSubagentTools, setSubagentCharacters)
       } else if (msg.type === 'agentToolStart') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const toolId = msg.toolId as string
         const status = msg.status as string
@@ -183,10 +324,11 @@ export function useExtensionMessages(
           const subId = os.addSubagent(id, toolId)
           setSubagentCharacters((prev) => {
             if (prev.some((s) => s.id === subId)) return prev
-            return [...prev, { id: subId, parentAgentId: id, parentToolId: toolId, label }]
+            return [...prev, { id: subId, parentAgentId: id, parentToolId: toolId, label, status: 'active' }]
           })
         }
       } else if (msg.type === 'agentToolDone') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const toolId = msg.toolId as string
         setAgentTools((prev) => {
@@ -198,6 +340,7 @@ export function useExtensionMessages(
           }
         })
       } else if (msg.type === 'agentToolsClear') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         setAgentTools((prev) => {
           if (!(id in prev)) return prev
@@ -220,6 +363,7 @@ export function useExtensionMessages(
         const id = msg.id as number
         setSelectedAgent(id)
       } else if (msg.type === 'agentStatus') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const status = msg.status as string
         setAgentStatuses((prev) => {
@@ -237,6 +381,7 @@ export function useExtensionMessages(
           playDoneSound()
         }
       } else if (msg.type === 'agentToolPermission') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         setAgentTools((prev) => {
           const list = prev[id]
@@ -248,6 +393,7 @@ export function useExtensionMessages(
         })
         os.showPermissionBubble(id)
       } else if (msg.type === 'subagentToolPermission') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const parentToolId = msg.parentToolId as string
         // Show permission bubble on the sub-agent character
@@ -256,6 +402,7 @@ export function useExtensionMessages(
           os.showPermissionBubble(subId)
         }
       } else if (msg.type === 'agentToolPermissionClear') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         setAgentTools((prev) => {
           const list = prev[id]
@@ -275,6 +422,7 @@ export function useExtensionMessages(
           }
         }
       } else if (msg.type === 'subagentToolStart') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const parentToolId = msg.parentToolId as string
         const toolId = msg.toolId as string
@@ -293,6 +441,7 @@ export function useExtensionMessages(
           os.setAgentActive(subId, true)
         }
       } else if (msg.type === 'subagentToolDone') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const parentToolId = msg.parentToolId as string
         const toolId = msg.toolId as string
@@ -307,6 +456,7 @@ export function useExtensionMessages(
           }
         })
       } else if (msg.type === 'subagentClear') {
+        if (runtimeV2Ref.current) return
         const id = msg.id as number
         const parentToolId = msg.parentToolId as string
         setSubagentTools((prev) => {

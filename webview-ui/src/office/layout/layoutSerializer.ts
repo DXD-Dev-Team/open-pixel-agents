@@ -185,6 +185,7 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
           seatCol: tileCol,
           seatRow: tileRow,
           facingDir,
+          isWorkSeat: dirs.some((d) => deskTiles.has(`${tileCol + d.dc},${tileRow + d.dr}`)),
           assigned: false,
         })
         seatCount++
@@ -296,16 +297,33 @@ export function migrateLayoutColors(layout: OfficeLayout): OfficeLayout {
  * to the new pattern-based system. If tileColors is already present, no migration needed.
  */
 function migrateLayout(layout: OfficeLayout): OfficeLayout {
-  if (layout.tileColors && layout.tileColors.length === layout.tiles.length) {
+  let normalizedTiles = layout.tiles.slice()
+  let changedTiles = false
+
+  if (!layout.layoutRevision) {
+    let sawLegacyVoid = false
+    let sawNewVoid = false
+    for (const tile of normalizedTiles) {
+      if (tile === 8) sawLegacyVoid = true
+      if (tile === TileType.VOID) sawNewVoid = true
+    }
+    if (sawLegacyVoid && !sawNewVoid) {
+      normalizedTiles = normalizedTiles.map((tile) => (tile === 8 ? TileType.VOID : tile))
+      changedTiles = true
+    }
+  }
+
+  if (layout.tileColors && layout.tileColors.length === normalizedTiles.length && !changedTiles) {
     return layout // Already migrated
   }
 
   // Check if any tiles use old values (1-4) — these map directly to FLOOR_1-4
   // but need color assignments
   const tileColors: Array<FloorColor | null> = []
-  for (const tile of layout.tiles) {
+  for (const tile of normalizedTiles) {
     switch (tile) {
       case 0: // WALL
+      case TileType.VOID:
         tileColors.push(null)
         break
       case 1: // was TILE_FLOOR → FLOOR_1 beige
@@ -321,10 +339,10 @@ function migrateLayout(layout: OfficeLayout): OfficeLayout {
         tileColors.push(DEFAULT_DOORWAY_COLOR)
         break
       default:
-        // New tile types (5-7) without colors — use neutral gray
+        // New tile types without colors — use neutral gray
         tileColors.push(tile > 0 ? { h: 0, s: 0, b: 0, c: 0 } : null)
     }
   }
 
-  return { ...layout, tileColors }
+  return { ...layout, tiles: normalizedTiles, tileColors }
 }
