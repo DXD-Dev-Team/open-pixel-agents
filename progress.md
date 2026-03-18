@@ -1,4 +1,4 @@
-# Pixel Agents OpenCode Migration Progress
+# Open Pixel Agents OpenCode Migration Progress
 
 Last updated: 2026-03-17
 
@@ -15,7 +15,7 @@ Last updated: 2026-03-17
 
 ### Completed
 
-- [x] Analyze the current fork against `ref/pixel-agents`
+- [x] Analyze the current fork against `ref/open-pixel-agents`
 - [x] Confirm whether real OpenCode visualization support was implemented
 - [x] Identify missing core OpenCode runtime functionality
 - [x] Implement OpenCode server client integration

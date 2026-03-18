@@ -15,7 +15,9 @@ const menuItemBase: React.CSSProperties = {
   justifyContent: 'space-between',
   width: '100%',
   padding: '6px 10px',
-  fontSize: '24px',
+  fontFamily: 'var(--vscode-font-family)',
+  fontSize: 'var(--vscode-font-size)',
+  fontWeight: 'var(--vscode-font-weight)',
   color: 'rgba(255, 255, 255, 0.8)',
   background: 'transparent',
   border: 'none',
@@ -59,6 +61,9 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           padding: '4px',
           boxShadow: 'var(--pixel-shadow)',
           minWidth: 200,
+          fontFamily: 'var(--vscode-font-family)',
+          fontSize: 'var(--vscode-font-size)',
+          fontWeight: 'var(--vscode-font-weight)',
         }}
       >
         {/* Header with title and X button */}
@@ -72,7 +77,16 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
             marginBottom: '4px',
           }}
         >
-          <span style={{ fontSize: '24px', color: 'rgba(255, 255, 255, 0.9)' }}>Settings</span>
+          <span
+            style={{
+              fontFamily: 'var(--vscode-font-family)',
+              fontSize: 'var(--vscode-font-size)',
+              fontWeight: 'var(--vscode-font-weight)',
+              color: 'rgba(255, 255, 255, 0.9)',
+            }}
+          >
+            Settings
+          </span>
           <button
             onClick={onClose}
             onMouseEnter={() => setHovered('close')}
@@ -82,7 +96,9 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
               border: 'none',
               borderRadius: 0,
               color: 'rgba(255, 255, 255, 0.6)',
-              fontSize: '24px',
+              fontFamily: 'var(--vscode-font-family)',
+              fontSize: 'var(--vscode-font-size)',
+              fontWeight: 'var(--vscode-font-weight)',
               cursor: 'pointer',
               padding: '0 4px',
               lineHeight: 1,
@@ -148,11 +164,11 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
             background: hovered === 'sound' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
           }}
         >
-          <span>Sound Notifications</span>
+          <span style={{ fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)' }}>Sound Notifications</span>
           <span
             style={{
-              width: 14,
-              height: 14,
+              width: 16,
+              height: 16,
               border: '2px solid rgba(255, 255, 255, 0.5)',
               borderRadius: 0,
               background: soundLocal ? 'rgba(90, 140, 255, 0.8)' : 'transparent',
@@ -160,12 +176,27 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              fontFamily: 'var(--vscode-font-family)',
               fontSize: '12px',
-              lineHeight: 1,
+              fontWeight: 'var(--vscode-font-weight)',
+              lineHeight: '12px',
               color: '#fff',
+              textAlign: 'center',
+              padding: 0,
             }}
           >
-            {soundLocal ? 'X' : ''}
+            <span
+              style={{
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transform: 'translateY(-0.5px)',
+              }}
+            >
+              {soundLocal ? '✓' : ''}
+            </span>
           </span>
         </button>
         <button
@@ -177,7 +208,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
             background: hovered === 'debug' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
           }}
         >
-          <span>Debug View</span>
+          <span style={{ fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)' }}>Debug View</span>
           {isDebugMode && (
             <span
               style={{

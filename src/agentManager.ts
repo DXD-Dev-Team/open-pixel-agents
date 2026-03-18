@@ -29,7 +29,7 @@ export async function launchNewTerminal(
 	const idx = nextTerminalIndexRef.current++;
 	const cwd = folderPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	if (!cwd) {
-		void vscode.window.showErrorMessage('Pixel Agents: No workspace folder found for OpenCode.');
+		void vscode.window.showErrorMessage('Open Pixel Agents: No workspace folder found for OpenCode.');
 		return undefined;
 	}
 
@@ -44,7 +44,7 @@ export async function launchNewTerminal(
 
 	const projectDir = getProjectDirPath(cwd);
 	if (!projectDir) {
-		console.log(`[Pixel Agents] No project dir, cannot track agent`);
+		console.log(`[Open Pixel Agents] No project dir, cannot track agent`);
 		return undefined;
 	}
 
@@ -67,7 +67,7 @@ export async function launchNewTerminal(
 	agents.set(id, agent);
 	activeAgentIdRef.current = id;
 	persistAgents();
-	console.log(`[Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
+	console.log(`[Open Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
 	webview?.postMessage({ type: 'agentCreated', id });
 	return agent;
 }
@@ -150,7 +150,7 @@ export function restoreAgents(
 		};
 
 		agents.set(p.id, agent);
-		console.log(`[Pixel Agents] Restored agent ${p.id} → terminal "${p.terminalName}" session=${p.sessionId ?? 'unknown'}`);
+		console.log(`[Open Pixel Agents] Restored agent ${p.id} → terminal "${p.terminalName}" session=${p.sessionId ?? 'unknown'}`);
 
 		if (p.id > maxId) {
 			maxId = p.id;
@@ -197,7 +197,7 @@ export function sendExistingAgents(
 
 	// Include persisted palette/seatId from separate key
 	const agentMeta = context.workspaceState.get<Record<string, { palette?: number; seatId?: string }>>(WORKSPACE_KEY_AGENT_SEATS, {});
-	console.log(`[Pixel Agents] sendExistingAgents: agents=${JSON.stringify(agentIds)}, meta=${JSON.stringify(agentMeta)}`);
+	console.log(`[Open Pixel Agents] sendExistingAgents: agents=${JSON.stringify(agentIds)}, meta=${JSON.stringify(agentMeta)}`);
 
 	webview.postMessage({
 		type: 'existingAgents',

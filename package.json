@@ -1,6 +1,6 @@
 {
   "name": "open-pixel-agents",
-  "displayName": "Open Pixel Agents",
+  "displayName": "Open Open Pixel Agents",
   "description": "Pixel art office where your OpenCode agents come to life as animated characters",
   "version": "1.0.0",
   "publisher": "inkbottle",
@@ -21,29 +21,29 @@
   "contributes": {
     "commands": [
       {
-        "command": "pixel-agents.showPanel",
-        "title": "Pixel Agents: Show Panel"
+        "command": "open-pixel-agents.showPanel",
+        "title": "Open Pixel Agents: Show Panel"
       },
       {
-        "command": "pixel-agents.exportDefaultLayout",
-        "title": "Pixel Agents: Export Layout as Default"
+        "command": "open-pixel-agents.exportDefaultLayout",
+        "title": "Open Pixel Agents: Export Layout as Default"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
-          "id": "pixel-agents-panel",
-          "title": "Pixel Agents",
+          "id": "open-pixel-agents-panel",
+          "title": "Open Pixel Agents",
           "icon": "$(window)"
         }
       ]
     },
     "views": {
-      "pixel-agents-panel": [
+      "open-pixel-agents-panel": [
         {
           "type": "webview",
-          "id": "pixel-agents.panelView",
-          "name": "Pixel Agents"
+          "id": "open-pixel-agents.panelView",
+          "name": "Open Pixel Agents"
         }
       ]
     }

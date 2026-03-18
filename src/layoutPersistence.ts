@@ -36,7 +36,7 @@ export function readLayoutFromFile(): Record<string, unknown> | null {
 		const raw = fs.readFileSync(filePath, 'utf-8');
 		return JSON.parse(raw) as Record<string, unknown>;
 	} catch (err) {
-		console.error('[Pixel Agents] Failed to read layout file:', err);
+		console.error('[Open Pixel Agents] Failed to read layout file:', err);
 		return null;
 	}
 }
@@ -53,7 +53,7 @@ export function writeLayoutToFile(layout: Record<string, unknown>): void {
 		fs.writeFileSync(tmpPath, json, 'utf-8');
 		fs.renameSync(tmpPath, filePath);
 	} catch (err) {
-		console.error('[Pixel Agents] Failed to write layout file:', err);
+		console.error('[Open Pixel Agents] Failed to write layout file:', err);
 	}
 }
 
@@ -73,11 +73,11 @@ export function migrateAndLoadLayout(
 	const fromFile = readLayoutFromFile();
 	if (fromFile) {
 		if (defaultLayout && !defaultIsLegacy && isLegacyAssetLayout(fromFile)) {
-			console.log('[Pixel Agents] Replacing legacy saved layout with bundled default layout');
+			console.log('[Open Pixel Agents] Replacing legacy saved layout with bundled default layout');
 			writeLayoutToFile(defaultLayout);
 			return defaultLayout;
 		}
-		console.log('[Pixel Agents] Layout loaded from file');
+		console.log('[Open Pixel Agents] Layout loaded from file');
 		return fromFile;
 	}
 
@@ -85,12 +85,12 @@ export function migrateAndLoadLayout(
 	const fromState = context.workspaceState.get<Record<string, unknown>>(WORKSPACE_KEY_LAYOUT);
 	if (fromState) {
 		if (defaultLayout && !defaultIsLegacy && isLegacyAssetLayout(fromState)) {
-			console.log('[Pixel Agents] Replacing legacy workspace layout with bundled default layout');
+			console.log('[Open Pixel Agents] Replacing legacy workspace layout with bundled default layout');
 			writeLayoutToFile(defaultLayout);
 			context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);
 			return defaultLayout;
 		}
-		console.log('[Pixel Agents] Migrating layout from workspace state to file');
+		console.log('[Open Pixel Agents] Migrating layout from workspace state to file');
 		writeLayoutToFile(fromState);
 		context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);
 		return fromState;
@@ -98,7 +98,7 @@ export function migrateAndLoadLayout(
 
 	// 3. Use bundled default
 	if (defaultLayout) {
-		console.log('[Pixel Agents] Writing bundled default layout to file');
+		console.log('[Open Pixel Agents] Writing bundled default layout to file');
 		writeLayoutToFile(defaultLayout);
 		return defaultLayout;
 	}
@@ -108,7 +108,7 @@ export function migrateAndLoadLayout(
 }
 
 /**
- * Watch ~/.pixel-agents/layout.json for external changes (other VS Code windows).
+ * Watch ~/.open-pixel-agents/layout.json for external changes (other VS Code windows).
  * Uses hybrid fs.watch + polling (same pattern as JSONL watching).
  */
 export function watchLayoutFile(
@@ -149,10 +149,10 @@ export function watchLayoutFile(
 
 			const raw = fs.readFileSync(filePath, 'utf-8');
 			const layout = JSON.parse(raw) as Record<string, unknown>;
-			console.log('[Pixel Agents] External layout change detected');
+			console.log('[Open Pixel Agents] External layout change detected');
 			onExternalChange(layout);
 		} catch (err) {
-			console.error('[Pixel Agents] Error checking layout file:', err);
+			console.error('[Open Pixel Agents] Error checking layout file:', err);
 		}
 	}
 

@@ -28,7 +28,9 @@ function getOfficeState(): OfficeState {
 
 const actionBarBtnStyle: React.CSSProperties = {
   padding: '4px 10px',
-  fontSize: '22px',
+  fontFamily: 'var(--vscode-font-family)',
+  fontSize: 'var(--vscode-font-size)',
+  fontWeight: 'var(--vscode-font-weight)',
   background: 'var(--pixel-btn-bg)',
   color: 'var(--pixel-text-dim)',
   border: '2px solid transparent',
@@ -64,6 +66,9 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
         borderRadius: 0,
         padding: '4px 8px',
         boxShadow: 'var(--pixel-shadow)',
+        fontFamily: 'var(--vscode-font-family)',
+        fontSize: 'var(--vscode-font-size)',
+        fontWeight: 'var(--vscode-font-weight)',
       }}
     >
       <button
@@ -97,7 +102,7 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
         </button>
       ) : (
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: '22px', color: 'var(--pixel-reset-text)' }}>Reset?</span>
+          <span style={{ fontSize: 'var(--vscode-font-size)', color: 'var(--pixel-reset-text)' }}>Reset?</span>
           <button
             style={{ ...actionBarBtnStyle, background: 'var(--pixel-danger-bg)', color: '#fff' }}
             onClick={() => { setShowResetConfirm(false); editor.handleReset() }}
@@ -186,11 +191,11 @@ function App() {
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       <style>{`
-        @keyframes pixel-agents-pulse {
+        @keyframes open-pixel-agents-pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.3; }
         }
-        .pixel-agents-pulse { animation: pixel-agents-pulse ${PULSE_ANIMATION_DURATION_SEC}s ease-in-out infinite; }
+        .open-pixel-agents-pulse { animation: open-pixel-agents-pulse ${PULSE_ANIMATION_DURATION_SEC}s ease-in-out infinite; }
       `}</style>
 
       <OfficeCanvas
@@ -210,7 +215,7 @@ function App() {
         panRef={editor.panRef}
       />
 
-      <ZoomControls zoom={editor.zoom} onZoomChange={editor.handleZoomChange} />
+      <ZoomControls zoom={editor.zoom} />
 
       {/* Vignette overlay */}
       <div
@@ -246,7 +251,9 @@ function App() {
             zIndex: 49,
             background: 'var(--pixel-hint-bg)',
             color: '#fff',
-            fontSize: '20px',
+            fontFamily: 'var(--vscode-font-family)',
+            fontSize: 'var(--vscode-font-size)',
+            fontWeight: 'var(--vscode-font-weight)',
             padding: '3px 8px',
             borderRadius: 0,
             border: '2px solid var(--pixel-accent)',

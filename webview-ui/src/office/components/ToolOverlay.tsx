@@ -159,11 +159,14 @@ export function ToolOverlay({
                 boxShadow: 'var(--pixel-shadow)',
                 whiteSpace: 'nowrap',
                 maxWidth: 220,
+                fontFamily: 'var(--vscode-font-family)',
+                fontSize: 'var(--vscode-font-size)',
+                fontWeight: 'var(--vscode-font-weight)',
               }}
             >
               {dotColor && (
                 <span
-                  className={isActive && !hasPermission ? 'pixel-agents-pulse' : undefined}
+                  className={isActive && !hasPermission ? 'open-pixel-agents-pulse' : undefined}
                   style={{
                     width: 6,
                     height: 6,
@@ -197,7 +200,9 @@ export function ToolOverlay({
                     color: 'var(--pixel-close-text)',
                     cursor: 'pointer',
                     padding: '0 2px',
-                    fontSize: '26px',
+                    fontFamily: 'var(--vscode-font-family)',
+                    fontSize: 'var(--vscode-font-size)',
+                    fontWeight: 'var(--vscode-font-weight)',
                     lineHeight: 1,
                     marginLeft: 2,
                     flexShrink: 0,

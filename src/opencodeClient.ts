@@ -90,7 +90,7 @@ function ensureOpenCodeServerTerminal(cwd: string, output?: vscode.OutputChannel
 		hideFromUser: false,
 	});
 	serverTerminal = terminal;
-	output?.appendLine(`[Pixel Agents] Created VS Code terminal "${OPENCODE_SERVER_TERMINAL_NAME}" for OpenCode server startup`);
+	output?.appendLine(`[Open Pixel Agents] Created VS Code terminal "${OPENCODE_SERVER_TERMINAL_NAME}" for OpenCode server startup`);
 	return terminal;
 }
 
@@ -150,22 +150,22 @@ export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputCh
 		return serverStartingPromise;
 	}
 	serverStartingPromise = (async () => {
-		output?.appendLine(`[Pixel Agents] Starting OpenCode server at ${getServerUrl()}`);
+		output?.appendLine(`[Open Pixel Agents] Starting OpenCode server at ${getServerUrl()}`);
 		try {
 			const terminal = ensureOpenCodeServerTerminal(cwd, output);
 			terminal.show(false);
 			terminal.sendText(getOpenCodeServerCommand(), true);
 		} catch (error) {
-			output?.appendLine(`[Pixel Agents] Failed to launch OpenCode server terminal command: ${String(error)}`);
+			output?.appendLine(`[Open Pixel Agents] Failed to launch OpenCode server terminal command: ${String(error)}`);
 			serverStartingPromise = null;
 			throw error;
 		}
 
-		output?.appendLine(`[Pixel Agents] Waiting for OpenCode server readiness (timeout ${Math.round((SERVER_RETRY_COUNT * SERVER_RETRY_DELAY_MS) / 1000)}s)`);
+		output?.appendLine(`[Open Pixel Agents] Waiting for OpenCode server readiness (timeout ${Math.round((SERVER_RETRY_COUNT * SERVER_RETRY_DELAY_MS) / 1000)}s)`);
 		for (let i = 0; i < SERVER_RETRY_COUNT; i += 1) {
 			if (await isOpenCodeServerHealthy()) {
 				serverStartingPromise = null;
-				output?.appendLine('[Pixel Agents] OpenCode server is ready');
+				output?.appendLine('[Open Pixel Agents] OpenCode server is ready');
 				return;
 			}
 			await delay(SERVER_RETRY_DELAY_MS);

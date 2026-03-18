@@ -38,7 +38,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	// Cross-window layout sync
 	layoutWatcher: LayoutWatcher | null = null;
 	runtimeEvents: { dispose: () => void } | null = null;
-	readonly output = vscode.window.createOutputChannel('Pixel Agents');
+	readonly output = vscode.window.createOutputChannel('Open Pixel Agents');
 	runtimeController: RuntimeController | null = null;
 
 	constructor(
@@ -81,7 +81,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				if (agent) {
 					this.controller.registerAgent(agent);
 					void this.controller.hydrateAll().catch((error) => {
-						this.output.appendLine(`[Pixel Agents] Failed to hydrate agent runtime state: ${String(error)}`);
+						this.output.appendLine(`[Open Pixel Agents] Failed to hydrate agent runtime state: ${String(error)}`);
 					});
 				}
 			} else if (message.type === 'focusAgent') {
@@ -96,7 +96,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				}
 			} else if (message.type === 'saveAgentSeats') {
 				// Store seat assignments in a separate key (never touched by persistAgents)
-				console.log(`[Pixel Agents] saveAgentSeats:`, JSON.stringify(message.seats));
+				console.log(`[Open Pixel Agents] saveAgentSeats:`, JSON.stringify(message.seats));
 				this.context.workspaceState.update(WORKSPACE_KEY_AGENT_SEATS, message.seats);
 			} else if (message.type === 'saveLayout') {
 				this.layoutWatcher?.markOwnWrite();
@@ -109,8 +109,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					try {
 						await this.runtime.ensureServer(workspaceRoot, this.output);
 					} catch (error) {
-						this.output.appendLine(`[Pixel Agents] Failed to start OpenCode server: ${String(error)}`);
-						void vscode.window.showErrorMessage('Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Pixel Agents output logs.');
+						this.output.appendLine(`[Open Pixel Agents] Failed to start OpenCode server: ${String(error)}`);
+						void vscode.window.showErrorMessage('Open Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Open Pixel Agents output logs.');
 					}
 				}
 				restoreAgents(
@@ -240,7 +240,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				}
 				sendExistingAgents(this.agents, this.context, this.webview);
 				await this.controller.hydrateAll().catch((error) => {
-					this.output.appendLine(`[Pixel Agents] Failed to fetch initial OpenCode session statuses: ${String(error)}`);
+					this.output.appendLine(`[Open Pixel Agents] Failed to fetch initial OpenCode session statuses: ${String(error)}`);
 				});
 				this.startRuntimeEvents();
 			} else if (message.type === 'openSessionsFolder') {
@@ -251,16 +251,16 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			} else if (message.type === 'exportLayout') {
 				const layout = readLayoutFromFile();
 				if (!layout) {
-					vscode.window.showWarningMessage('Pixel Agents: No saved layout to export.');
+					vscode.window.showWarningMessage('Open Pixel Agents: No saved layout to export.');
 					return;
 				}
 				const uri = await vscode.window.showSaveDialog({
 					filters: { 'JSON Files': ['json'] },
-					defaultUri: vscode.Uri.file(path.join(os.homedir(), 'pixel-agents-layout.json')),
+					defaultUri: vscode.Uri.file(path.join(os.homedir(), 'open-pixel-agents-layout.json')),
 				});
 				if (uri) {
 					fs.writeFileSync(uri.fsPath, JSON.stringify(layout, null, 2), 'utf-8');
-					vscode.window.showInformationMessage('Pixel Agents: Layout exported successfully.');
+					vscode.window.showInformationMessage('Open Pixel Agents: Layout exported successfully.');
 				}
 			} else if (message.type === 'importLayout') {
 				const uris = await vscode.window.showOpenDialog({
@@ -274,15 +274,15 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					const raw = fs.readFileSync(uris[0].fsPath, 'utf-8');
 					const imported = JSON.parse(raw) as Record<string, unknown>;
 					if (imported.version !== 1 || !Array.isArray(imported.tiles)) {
-						vscode.window.showErrorMessage('Pixel Agents: Invalid layout file.');
+						vscode.window.showErrorMessage('Open Pixel Agents: Invalid layout file.');
 						return;
 					}
 					this.layoutWatcher?.markOwnWrite();
 					writeLayoutToFile(imported);
 					this.webview?.postMessage({ type: 'layoutLoaded', layout: imported });
-					vscode.window.showInformationMessage('Pixel Agents: Layout imported successfully.');
+					vscode.window.showInformationMessage('Open Pixel Agents: Layout imported successfully.');
 				} catch {
-					vscode.window.showErrorMessage('Pixel Agents: Failed to read or parse layout file.');
+					vscode.window.showErrorMessage('Open Pixel Agents: Failed to read or parse layout file.');
 				}
 			}
 		});
@@ -329,7 +329,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				this.controller.handleEvent(event);
 			},
 			(error) => {
-				this.output.appendLine(`[Pixel Agents] OpenCode event stream error: ${String(error)}`);
+				this.output.appendLine(`[Open Pixel Agents] OpenCode event stream error: ${String(error)}`);
 			},
 		);
 	}
@@ -338,18 +338,18 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	exportDefaultLayout(): void {
 		const layout = readLayoutFromFile();
 		if (!layout) {
-			vscode.window.showWarningMessage('Pixel Agents: No saved layout found.');
+			vscode.window.showWarningMessage('Open Pixel Agents: No saved layout found.');
 			return;
 		}
 		const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 		if (!workspaceRoot) {
-			vscode.window.showErrorMessage('Pixel Agents: No workspace folder found.');
+			vscode.window.showErrorMessage('Open Pixel Agents: No workspace folder found.');
 			return;
 		}
 		const targetPath = path.join(workspaceRoot, 'webview-ui', 'public', 'assets', 'default-layout.json');
 		const json = JSON.stringify(layout, null, 2);
 		fs.writeFileSync(targetPath, json, 'utf-8');
-		vscode.window.showInformationMessage(`Pixel Agents: Default layout exported to ${targetPath}`);
+		vscode.window.showInformationMessage(`Open Pixel Agents: Default layout exported to ${targetPath}`);
 	}
 
 	private startLayoutWatcher(): void {
@@ -357,7 +357,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			return;
 		}
 		this.layoutWatcher = watchLayoutFile((layout) => {
-			console.log('[Pixel Agents] External layout change — pushing to webview');
+			console.log('[Open Pixel Agents] External layout change — pushing to webview');
 			this.webview?.postMessage({ type: 'layoutLoaded', layout });
 		});
 	}

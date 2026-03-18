@@ -8,7 +8,9 @@ import { getColorizedFloorSprite, getFloorPatternCount, hasFloorSprites } from '
 
 const btnStyle: React.CSSProperties = {
   padding: '3px 8px',
-  fontSize: '22px',
+  fontFamily: 'var(--vscode-font-family)',
+  fontSize: 'var(--vscode-font-size)',
+  fontWeight: 'var(--vscode-font-weight)',
   background: 'rgba(255, 255, 255, 0.08)',
   color: 'rgba(255, 255, 255, 0.7)',
   border: '2px solid transparent',
@@ -25,7 +27,9 @@ const activeBtnStyle: React.CSSProperties = {
 
 const tabStyle: React.CSSProperties = {
   padding: '2px 6px',
-  fontSize: '20px',
+  fontFamily: 'var(--vscode-font-family)',
+  fontSize: 'var(--vscode-font-size)',
+  fontWeight: 'var(--vscode-font-weight)',
   background: 'transparent',
   color: 'rgba(255, 255, 255, 0.5)',
   border: '2px solid transparent',
@@ -123,7 +127,7 @@ function ColorSlider({ label, value, min, max, onChange }: {
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <span style={{ fontSize: '20px', color: '#999', width: 28, textAlign: 'right', flexShrink: 0 }}>{label}</span>
+      <span style={{ fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)', color: '#999', width: 28, textAlign: 'right', flexShrink: 0 }}>{label}</span>
       <input
         type="range"
         min={min}
@@ -132,7 +136,7 @@ function ColorSlider({ label, value, min, max, onChange }: {
         onChange={(e) => onChange(Number(e.target.value))}
         style={{ flex: 1, height: 12, accentColor: 'rgba(90, 140, 255, 0.8)' }}
       />
-      <span style={{ fontSize: '20px', color: '#999', width: 48, textAlign: 'right', flexShrink: 0 }}>{value}</span>
+      <span style={{ fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)', color: '#999', width: 48, textAlign: 'right', flexShrink: 0 }}>{value}</span>
     </div>
   )
 }
@@ -226,6 +230,9 @@ export function EditorToolbar({
         gap: 6,
         boxShadow: '2px 2px 0px #0a0a14',
         maxWidth: 'calc(100vw - 20px)',
+        fontFamily: 'var(--vscode-font-family)',
+        fontSize: 'var(--vscode-font-size)',
+        fontWeight: 'var(--vscode-font-weight)',
       }}
     >
       {/* Tool row — at the bottom */}
@@ -433,7 +440,7 @@ export function EditorToolbar({
             </button>
             {selectedFurnitureColor && (
               <button
-                style={{ ...btnStyle, fontSize: '20px', padding: '2px 6px' }}
+                style={{ ...btnStyle, padding: '2px 6px' }}
                 onClick={() => onSelectedFurnitureColorChange(null)}
                 title="Remove color (restore original)"
               >
@@ -464,7 +471,7 @@ export function EditorToolbar({
               )}
               <ColorSlider label="B" value={effectiveColor.b} min={-100} max={100} onChange={(v) => handleSelFurnColorChange('b', v)} />
               <ColorSlider label="C" value={effectiveColor.c} min={-100} max={100} onChange={(v) => handleSelFurnColorChange('c', v)} />
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '20px', color: '#999', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)', color: '#999', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={!!effectiveColor.colorize}

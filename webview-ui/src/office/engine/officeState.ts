@@ -161,13 +161,16 @@ export class OfficeState {
   }
 
   private findFreeSeat(): string | null {
+    const freeWorkSeats: string[] = []
+    const freeOtherSeats: string[] = []
     for (const [uid, seat] of this.seats) {
-      if (seat.isWorkSeat && !seat.assigned) return uid
+      if (seat.assigned) continue
+      if (seat.isWorkSeat) freeWorkSeats.push(uid)
+      else freeOtherSeats.push(uid)
     }
-    for (const [uid, seat] of this.seats) {
-      if (!seat.assigned) return uid
-    }
-    return null
+    const pool = freeWorkSeats.length > 0 ? freeWorkSeats : freeOtherSeats
+    if (pool.length === 0) return null
+    return pool[Math.floor(Math.random() * pool.length)]
   }
 
   private getEntranceTile(): { col: number; row: number } {
@@ -491,23 +494,7 @@ export class OfficeState {
     const derivedOffset = 45 + (hash % 180)
     const hueShift = (baseHue + derivedOffset) % 360
 
-    // Find the free seat closest to the parent agent
-    const parentCol = parentCh ? parentCh.tileCol : 0
-    const parentRow = parentCh ? parentCh.tileRow : 0
-    const dist = (c: number, r: number) =>
-      Math.abs(c - parentCol) + Math.abs(r - parentRow)
-
-    let bestSeatId: string | null = null
-    let bestDist = Infinity
-    for (const [uid, seat] of this.seats) {
-      if (!seat.assigned) {
-        const d = dist(seat.seatCol, seat.seatRow)
-        if (d < bestDist) {
-          bestDist = d
-          bestSeatId = uid
-        }
-      }
-    }
+    const bestSeatId = this.findFreeSeat()
 
     let ch: Character
     if (bestSeatId) {
@@ -515,20 +502,10 @@ export class OfficeState {
       seat.assigned = true
       ch = createCharacter(id, palette, bestSeatId, seat, hueShift)
     } else {
-      // No seats — spawn at closest walkable tile to parent
-      let spawn = { col: 1, row: 1 }
-      if (this.walkableTiles.length > 0) {
-        let closest = this.walkableTiles[0]
-        let closestDist = dist(closest.col, closest.row)
-        for (let i = 1; i < this.walkableTiles.length; i++) {
-          const d = dist(this.walkableTiles[i].col, this.walkableTiles[i].row)
-          if (d < closestDist) {
-            closest = this.walkableTiles[i]
-            closestDist = d
-          }
-        }
-        spawn = closest
-      }
+      // No seats — spawn at a walkable tile
+      const spawn = this.walkableTiles.length > 0
+        ? this.walkableTiles[Math.floor(Math.random() * this.walkableTiles.length)]
+        : { col: 1, row: 1 }
       ch = createCharacter(id, palette, null, null, hueShift)
       ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2
       ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2

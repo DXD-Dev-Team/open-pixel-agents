@@ -29,7 +29,10 @@ const panelStyle: React.CSSProperties = {
 
 const btnBase: React.CSSProperties = {
   padding: '5px 10px',
-  fontSize: '24px',
+  fontFamily: 'var(--vscode-font-family)',
+  fontSize: 'var(--vscode-font-size)',
+  fontWeight: 'var(--vscode-font-weight)',
+  lineHeight: 1.4,
   color: 'var(--pixel-text)',
   background: 'var(--pixel-btn-bg)',
   border: '2px solid transparent',
@@ -110,7 +113,7 @@ export function BottomToolbar({
               <button
                 key={folder.path}
                 onClick={() => handleSelectFolder(folder.path)}
-                style={{ ...btnBase, textAlign: 'left', fontSize: '20px' }}
+                style={{ ...btnBase, textAlign: 'left' }}
                 title={folder.path}
               >
                 {folder.name}

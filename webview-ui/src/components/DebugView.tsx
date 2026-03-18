@@ -16,7 +16,7 @@ const DEBUG_Z = 40
 function ToolDot({ tool }: { tool: ToolActivity }) {
   return (
     <span
-      className={tool.done ? undefined : 'pixel-agents-pulse'}
+      className={tool.done ? undefined : 'open-pixel-agents-pulse'}
       style={{
         width: 6,
         height: 6,
@@ -37,7 +37,9 @@ function ToolLine({ tool }: { tool: ToolActivity }) {
   return (
     <span
       style={{
-        fontSize: '22px',
+        fontFamily: 'var(--vscode-font-family)',
+        fontSize: 'var(--vscode-font-size)',
+        fontWeight: 'var(--vscode-font-weight)',
         opacity: tool.done ? 0.5 : 0.8,
         display: 'flex',
         alignItems: 'center',
@@ -64,26 +66,43 @@ export function DebugView({
     const subs = subagentTools[id] || {}
     const status = agentStatuses[id]
     const hasActiveTools = tools.some((t) => !t.done)
+    const frameColor = isSelected ? '#5a8cff' : '#4a4a6a'
     return (
       <div
         key={id}
         style={{
-          border: `2px solid ${isSelected ? '#5a8cff' : '#4a4a6a'}`,
           borderRadius: 0,
           padding: '6px 8px',
-          background: isSelected ? 'var(--vscode-list-activeSelectionBackground, rgba(255,255,255,0.04))' : undefined,
+          boxSizing: 'border-box',
+          background: isSelected
+            ? 'var(--vscode-list-activeSelectionBackground, rgba(255,255,255,0.04))'
+            : 'var(--vscode-editorWidget-background, var(--vscode-editor-background))',
         }}
       >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+        <div
+          style={{
+            display: 'flex',
+            width: '100%',
+            alignItems: 'stretch',
+            gap: 0,
+            border: `2px solid ${frameColor}`,
+            boxSizing: 'border-box',
+            background: 'var(--vscode-editorWidget-background, var(--vscode-editor-background))',
+          }}
+        >
           <button
             onClick={() => onSelectAgent(id)}
             style={{
+              flex: 1,
+              border: 'none',
               borderRadius: 0,
               padding: '6px 10px',
-              fontSize: '26px',
-              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : undefined,
-              color: isSelected ? '#fff' : undefined,
-              fontWeight: isSelected ? 'bold' : undefined,
+              fontFamily: 'var(--vscode-font-family)',
+              fontSize: 'var(--vscode-font-size)',
+              fontWeight: isSelected ? 'bold' : 'var(--vscode-font-weight)',
+              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : 'var(--vscode-editorWidget-background, var(--vscode-editor-background))',
+              color: isSelected ? '#fff' : 'var(--vscode-foreground)',
+              textAlign: 'left',
             }}
           >
             Agent #{id}
@@ -91,18 +110,22 @@ export function DebugView({
           <button
             onClick={() => vscode.postMessage({ type: 'closeAgent', id })}
             style={{
+              border: 'none',
+              borderLeft: `2px solid ${frameColor}`,
               borderRadius: 0,
               padding: '6px 8px',
-              fontSize: '26px',
+              fontFamily: 'var(--vscode-font-family)',
+              fontSize: 'var(--vscode-font-size)',
+              fontWeight: 'var(--vscode-font-weight)',
               opacity: 0.7,
-              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : undefined,
-              color: isSelected ? '#fff' : undefined,
+              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : 'var(--vscode-editorWidget-background, var(--vscode-editor-background))',
+              color: isSelected ? '#fff' : 'var(--vscode-foreground)',
             }}
             title="Close agent"
           >
             ✕
           </button>
-        </span>
+        </div>
         {(tools.length > 0 || status === 'waiting') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 4, paddingLeft: 4 }}>
             {tools.map((tool) => (
@@ -130,7 +153,9 @@ export function DebugView({
             {status === 'waiting' && !hasActiveTools && (
               <span
                 style={{
-                  fontSize: '22px',
+                  fontFamily: 'var(--vscode-font-family)',
+                  fontSize: 'var(--vscode-font-size)',
+                  fontWeight: 'var(--vscode-font-weight)',
                   opacity: 0.85,
                   display: 'flex',
                   alignItems: 'center',
@@ -167,12 +192,25 @@ export function DebugView({
         background: 'var(--vscode-editor-background)',
         zIndex: DEBUG_Z,
         overflow: 'auto',
+        fontFamily: 'var(--vscode-font-family)',
+        fontSize: 'var(--vscode-font-size)',
+        fontWeight: 'var(--vscode-font-weight)',
       }}
     >
       {/* Top padding so cards don't overlap the floating toolbar */}
-      <div style={{ padding: '12px 12px 12px', fontSize: '28px' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {agents.map(renderAgentCard)}
+      <div style={{ width: '100%', boxSizing: 'border-box', padding: '12px 12px 12px', fontFamily: 'var(--vscode-font-family)', fontSize: 'var(--vscode-font-size)', fontWeight: 'var(--vscode-font-weight)' }}>
+        <div
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            border: '2px solid var(--pixel-border)',
+            background: 'var(--vscode-editorWidget-background, var(--vscode-editor-background))',
+            padding: '6px',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {agents.map(renderAgentCard)}
+          </div>
         </div>
       </div>
     </div>

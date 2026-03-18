@@ -1,13 +1,13 @@
-# Pixel Agents (OpenCode Fork)
+# Open Pixel Agents (OpenCode Fork)
 
 A VS Code extension that turns your OpenCode sessions into animated pixel art characters in a virtual office.
 
 Each OpenCode session you launch from the extension spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
 
-This fork started from the original Pixel Agents project and adapts its visualization model to OpenCode's server API and event stream.
+This fork started from the original Open Pixel Agents project and adapts its visualization model to OpenCode's server API and event stream.
 
 
-![Pixel Agents screenshot](webview-ui/public/Screenshot.jpg)
+![Open Pixel Agents screenshot](webview-ui/public/Screenshot.jpg)
 
 ## Features
 
@@ -21,7 +21,7 @@ This fork started from the original Pixel Agents project and adapts its visualiz
 - **Diverse characters** — 6 diverse characters.
 
 <p align="center">
-  <img src="webview-ui/public/characters.png" alt="Pixel Agents characters" width="320" height="72" style="image-rendering: pixelated;">
+  <img src="webview-ui/public/characters.png" alt="Open Pixel Agents characters" width="320" height="72" style="image-rendering: pixelated;">
 </p>
 
 ## Requirements
@@ -36,8 +36,8 @@ If you want to use, develop, or contribute to this fork:
 ### Install from source
 
 ```bash
-git clone https://github.com/pablodelucca/pixel-agents.git
-cd pixel-agents
+git clone https://github.com/pablodelucca/open-pixel-agents.git
+cd open-pixel-agents
 npm install
 cd webview-ui && npm install && cd ..
 npm run build
@@ -47,7 +47,7 @@ Then press **F5** in VS Code to launch the Extension Development Host.
 
 ### Usage
 
-1. Open the **Pixel Agents** panel (it appears in the bottom panel area alongside your terminal)
+1. Open the **Open Pixel Agents** panel (it appears in the bottom panel area alongside your terminal)
 2. Click **+ Agent** to spawn a new OpenCode session and its character
 3. Start coding with OpenCode — watch the character react in real time
 4. Click a character to select it, then click a seat to reassign it
@@ -69,7 +69,7 @@ The grid is expandable up to 64×64 tiles. Click the ghost border outside the cu
 
 The office tileset used in this project and available via the extension is **[Office Interior Tileset (16x16)](https://donarg.itch.io/officetileset)** by **Donarg**, available on itch.io for **$2 USD**.
 
-This is the only part of the project that is not freely available. The tileset is not included in this repository due to its license. To use Pixel Agents locally with the full set of office furniture and decorations, purchase the tileset and run the asset import pipeline:
+This is the only part of the project that is not freely available. The tileset is not included in this repository due to its license. To use Open Pixel Agents locally with the full set of office furniture and decorations, purchase the tileset and run the asset import pipeline:
 
 ```bash
 npm run import-tileset
@@ -81,7 +81,7 @@ The extension will still work without the tileset — you'll get the default cha
 
 ## How It Works
 
-Pixel Agents talks to OpenCode through its local server API.
+Open Pixel Agents talks to OpenCode through its local server API.
 
 When you click **+ Agent**, the extension:
 
@@ -128,7 +128,7 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## Supporting the Project
 
-If you find Pixel Agents useful, consider supporting its development:
+If you find Open Pixel Agents useful, consider supporting its development:
 
 <a href="https://github.com/sponsors/pablodelucca">
   <img src="https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github" alt="GitHub Sponsors">

@@ -1,4 +1,4 @@
-# Pixel Agents OpenCode Fork 分析与实现报告
+# Open Pixel Agents OpenCode Fork 分析与实现报告
 
 ## 结论
 
@@ -18,7 +18,7 @@
 
 ## 我确认过的现状
 
-### 原始参考项目 `ref/pixel-agents`
+### 原始参考项目 `ref/open-pixel-agents`
 原始项目是一个成熟的 Claude Code agent 可视化扩展，核心能力包括：
 
 - 一个 agent 对应一个终端角色
@@ -97,7 +97,7 @@ README 说是 OpenCode fork，但实际代码不是。
 
 这样做的好处是：
 - 不需要重写整套前端动画与渲染逻辑
-- 复用了原 Pixel Agents 的可视化能力
+- 复用了原 Open Pixel Agents 的可视化能力
 - 最小改动就能跑通 OpenCode
 
 #### 4. PixelAgentsViewProvider 接入 OpenCode 事件总线
@@ -176,7 +176,7 @@ README 说是 OpenCode fork，但实际代码不是。
 
 这意味着：
 
-> 这个 fork 现在已经不是“名义上的 OpenCode fork”，而是“真正能以 OpenCode 为 runtime 的 Pixel Agents”。
+> 这个 fork 现在已经不是“名义上的 OpenCode fork”，而是“真正能以 OpenCode 为 runtime 的 Open Pixel Agents”。
 
 ---
 
@@ -289,9 +289,9 @@ npm run build
 
 ---
 
-## OpenCode Pixel Agents 使用指南
+## OpenCode Open Pixel Agents 使用指南
 
-# Pixel Agents for OpenCode
+# Open Pixel Agents for OpenCode
 
 一个 VS Code 插件，用像素风办公室的方式可视化 OpenCode agent / session 的运行状态。
 
@@ -319,7 +319,7 @@ npm run build
 2. 调用 OpenCode HTTP API 创建 session
 3. 使用 `opencode attach` 在 VS Code terminal 中连接该 session
 4. 订阅 OpenCode 的 `/global/event` SSE 事件流
-5. 将 OpenCode 的 session/tool/subtask/permission 事件映射为 Pixel Agents 的角色状态与动画
+5. 将 OpenCode 的 session/tool/subtask/permission 事件映射为 Open Pixel Agents 的角色状态与动画
 
 ---
 
@@ -375,13 +375,13 @@ npm run build
 ```
 
 3. 按 `F5`
-4. 在新的 Extension Development Host 窗口中打开 **Pixel Agents** 面板
+4. 在新的 Extension Development Host 窗口中打开 **Open Pixel Agents** 面板
 
 ---
 
 ## 如何启动一个 OpenCode Agent
 
-在 Pixel Agents 面板中点击：
+在 Open Pixel Agents 面板中点击：
 
 ```text
 + Agent

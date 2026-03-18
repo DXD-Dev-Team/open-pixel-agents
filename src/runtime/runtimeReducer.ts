@@ -59,6 +59,10 @@ function setChildVisibility(child: SessionRuntimeRecord, now: number, allowCompl
 		child.completingUntil = undefined;
 		return;
 	}
+	if (!child.rawStatus) {
+		child.completingUntil = undefined;
+		return;
+	}
 	if (allowCompleting && isSessionIdle(child.rawStatus)) {
 		if (!child.completingUntil) {
 			child.completingUntil = now + COMPLETING_GRACE_MS;

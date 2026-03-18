@@ -1,4 +1,4 @@
-# Pixel Agents — OpenCode Reference
+# Open Pixel Agents — OpenCode Reference
 
 VS Code extension with an embedded React webview: a pixel-art office where OpenCode sessions appear as animated characters.
 
@@ -157,7 +157,7 @@ These behaviors remain core to the project and are still accurate:
 - Matrix spawn/despawn effects
 - Sub-agent characters inherit parent palette/hue shift
 - Layout editor supports floor/wall/furniture placement, undo/redo, import/export
-- Layout is persisted at `~/.pixel-agents/layout.json`
+- Layout is persisted at `~/.open-pixel-agents/layout.json`
 
 ---
 

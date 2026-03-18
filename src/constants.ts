@@ -21,18 +21,18 @@ export const CHAR_FRAMES_PER_ROW = 7;
 export const CHAR_COUNT = 6;
 
 // ── User-Level Layout Persistence ─────────────────────────────
-export const LAYOUT_FILE_DIR = '.pixel-agents';
+export const LAYOUT_FILE_DIR = '.open-pixel-agents';
 export const LAYOUT_FILE_NAME = 'layout.json';
 export const LAYOUT_FILE_POLL_INTERVAL_MS = 2000;
 
 // ── Settings Persistence ────────────────────────────────────
-export const GLOBAL_KEY_SOUND_ENABLED = 'pixel-agents.soundEnabled';
+export const GLOBAL_KEY_SOUND_ENABLED = 'open-pixel-agents.soundEnabled';
 
 // ── VS Code Identifiers ─────────────────────────────────────
-export const VIEW_ID = 'pixel-agents.panelView';
-export const COMMAND_SHOW_PANEL = 'pixel-agents.showPanel';
-export const COMMAND_EXPORT_DEFAULT_LAYOUT = 'pixel-agents.exportDefaultLayout';
-export const WORKSPACE_KEY_AGENTS = 'pixel-agents.agents';
-export const WORKSPACE_KEY_AGENT_SEATS = 'pixel-agents.agentSeats';
-export const WORKSPACE_KEY_LAYOUT = 'pixel-agents.layout';
+export const VIEW_ID = 'open-pixel-agents.panelView';
+export const COMMAND_SHOW_PANEL = 'open-pixel-agents.showPanel';
+export const COMMAND_EXPORT_DEFAULT_LAYOUT = 'open-pixel-agents.exportDefaultLayout';
+export const WORKSPACE_KEY_AGENTS = 'open-pixel-agents.agents';
+export const WORKSPACE_KEY_AGENT_SEATS = 'open-pixel-agents.agentSeats';
+export const WORKSPACE_KEY_LAYOUT = 'open-pixel-agents.layout';
 export const TERMINAL_NAME_PREFIX = 'OpenCode';
