@@ -1,8 +1,5 @@
 /**
- * Asset Loader - Loads furniture assets from disk at startup
- *
- * Reads assets/furniture/furniture-catalog.json and loads all PNG files
- * into SpriteData format for use in the webview.
+ * Asset Loader - Loads furniture assets from per-folder manifests.
  */
 
 import * as fs from 'fs';
@@ -15,7 +12,6 @@ import {
 	WALL_PIECE_HEIGHT,
 	WALL_GRID_COLS,
 	WALL_BITMASK_COUNT,
-	FLOOR_PATTERN_COUNT,
 	FLOOR_TILE_SIZE,
 	CHARACTER_DIRECTIONS,
 	CHAR_FRAME_W,
@@ -42,6 +38,10 @@ export interface FurnitureAsset {
 	backgroundTiles?: number;
 	orientation?: string;
 	state?: string;
+	mirrorSide?: boolean;
+	rotationScheme?: string;
+	animationGroup?: string;
+	frame?: number;
 }
 
 export interface LoadedAssets {
@@ -57,41 +57,57 @@ export async function loadFurnitureAssets(
 ): Promise<LoadedAssets | null> {
 	try {
 		console.log(`[AssetLoader] workspaceRoot received: "${workspaceRoot}"`);
-		const catalogPath = path.join(workspaceRoot, 'assets', 'furniture', 'furniture-catalog.json');
-		console.log(`[AssetLoader] Attempting to load from: ${catalogPath}`);
+		const furnitureDir = path.join(workspaceRoot, 'assets', 'furniture');
+		console.log(`[AssetLoader] Scanning furniture directory: ${furnitureDir}`);
 
-		if (!fs.existsSync(catalogPath)) {
-			console.log('ℹ️  No furniture catalog found at:', catalogPath);
+		if (!fs.existsSync(furnitureDir)) {
+			console.log('ℹ️  No furniture directory found at:', furnitureDir);
 			return null;
 		}
 
-		console.log('📦 Loading furniture assets from:', catalogPath);
+		const entries = fs.readdirSync(furnitureDir, { withFileTypes: true });
+		const dirs = entries.filter((entry) => entry.isDirectory());
+		if (dirs.length === 0) {
+			console.log('ℹ️  No furniture subdirectories found');
+			return null;
+		}
 
-		const catalogContent = fs.readFileSync(catalogPath, 'utf-8');
-		const catalogData = JSON.parse(catalogContent);
-		const catalog: FurnitureAsset[] = catalogData.assets || [];
+		console.log(`📦 Found ${dirs.length} furniture folders`);
+
+		const catalog: FurnitureAsset[] = [];
 
 		const sprites = new Map<string, string[][]>();
 
-		for (const asset of catalog) {
+		for (const dir of dirs) {
 			try {
-				let filePath = asset.file;
-				if (!filePath.startsWith('assets/')) {
-					filePath = `assets/${filePath}`;
-				}
-				const assetPath = path.join(workspaceRoot, filePath);
-
-				if (!fs.existsSync(assetPath)) {
-					console.warn(`  ⚠️  Asset file not found: ${asset.file}`);
+				const itemDir = path.join(furnitureDir, dir.name);
+				const manifestPath = path.join(itemDir, 'manifest.json');
+				if (!fs.existsSync(manifestPath)) {
+					console.warn(`  ⚠️  No manifest.json in ${dir.name}`);
 					continue;
 				}
 
-				const pngBuffer = fs.readFileSync(assetPath);
-				const spriteData = pngToSpriteData(pngBuffer, asset.width, asset.height);
+				const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
+				const manifest = JSON.parse(manifestContent) as FurnitureManifestFile;
 
-				sprites.set(asset.id, spriteData);
+				const assets = flattenManifest(manifest);
+
+				for (const asset of assets) {
+					const assetPath = path.join(itemDir, asset.file);
+
+					if (!fs.existsSync(assetPath)) {
+						console.warn(`  ⚠️  Asset file not found: ${asset.file} in ${dir.name}`);
+						continue;
+					}
+
+					const pngBuffer = fs.readFileSync(assetPath);
+					const spriteData = pngToSpriteData(pngBuffer, asset.width, asset.height);
+					sprites.set(asset.id, spriteData);
+				}
+
+				catalog.push(...assets);
 			} catch (err) {
-				console.warn(`  ⚠️  Error loading ${asset.id}: ${err instanceof Error ? err.message : err}`);
+				console.warn(`  ⚠️  Error processing ${dir.name}: ${err instanceof Error ? err.message : err}`);
 			}
 		}
 
@@ -158,19 +174,46 @@ function pngToSpriteData(pngBuffer: Buffer, width: number, height: number): stri
 // ── Default layout loading ───────────────────────────────────
 
 /**
- * Load the bundled default layout from assets/default-layout.json.
- * Returns the parsed layout object or null if not found.
+ * Load the bundled default layout with the highest available revision.
  */
 export function loadDefaultLayout(assetsRoot: string): Record<string, unknown> | null {
+	const assetsDir = path.join(assetsRoot, 'assets');
 	try {
-		const layoutPath = path.join(assetsRoot, 'assets', 'default-layout.json');
-		if (!fs.existsSync(layoutPath)) {
-			console.log('[AssetLoader] No default-layout.json found at:', layoutPath);
+		let bestRevision = 0;
+		let bestPath: string | null = null;
+
+		if (fs.existsSync(assetsDir)) {
+			for (const file of fs.readdirSync(assetsDir)) {
+				const match = /^default-layout-(\d+)\.json$/.exec(file);
+				if (!match) {
+					continue;
+				}
+				const rev = parseInt(match[1], 10);
+				if (rev > bestRevision) {
+					bestRevision = rev;
+					bestPath = path.join(assetsDir, file);
+				}
+			}
+		}
+
+		if (!bestPath) {
+			const fallback = path.join(assetsDir, 'default-layout.json');
+			if (fs.existsSync(fallback)) {
+				bestPath = fallback;
+			}
+		}
+
+		if (!bestPath) {
+			console.log('[AssetLoader] No default layout found in:', assetsDir);
 			return null;
 		}
-		const content = fs.readFileSync(layoutPath, 'utf-8');
+
+		const content = fs.readFileSync(bestPath, 'utf-8');
 		const layout = JSON.parse(content) as Record<string, unknown>;
-		console.log(`[AssetLoader] ✅ Loaded default layout (${layout.cols}×${layout.rows})`);
+		if (bestRevision > 0 && layout.layoutRevision === undefined) {
+			layout.layoutRevision = bestRevision;
+		}
+		console.log(`[AssetLoader] ✅ Loaded default layout (${layout.cols}×${layout.rows}) from ${path.basename(bestPath)}`);
 		return layout;
 	} catch (err) {
 		console.error(`[AssetLoader] ❌ Error loading default layout: ${err instanceof Error ? err.message : err}`);
@@ -186,19 +229,31 @@ export interface LoadedWallTiles {
 }
 
 /**
- * Load wall tiles from walls.png (64×128, 4×4 grid of 16×32 pieces).
- * Piece at bitmask M: col = M % 4, row = floor(M / 4).
+ * Load wall tiles from assets/walls/wall_*.png.
+ * Uses the first wall set for current frontend compatibility.
  */
 export async function loadWallTiles(
 	assetsRoot: string,
 ): Promise<LoadedWallTiles | null> {
 	try {
-		const wallPath = path.join(assetsRoot, 'assets', 'walls.png');
-		if (!fs.existsSync(wallPath)) {
-			console.log('[AssetLoader] No walls.png found at:', wallPath);
+		const wallsDir = path.join(assetsRoot, 'assets', 'walls');
+		if (!fs.existsSync(wallsDir)) {
+			console.log('[AssetLoader] No walls/ directory found at:', wallsDir);
 			return null;
 		}
 
+		const entries = fs.readdirSync(wallsDir);
+		const wallFiles = entries
+			.map((entry) => ({ entry, match: /^wall_(\d+)\.png$/i.exec(entry) }))
+			.filter((item): item is { entry: string; match: RegExpExecArray } => item.match !== null)
+			.sort((a, b) => parseInt(a.match[1], 10) - parseInt(b.match[1], 10));
+
+		if (wallFiles.length === 0) {
+			console.log('[AssetLoader] No wall_N.png files found in walls/');
+			return null;
+		}
+
+		const wallPath = path.join(wallsDir, wallFiles[0].entry);
 		console.log('[AssetLoader] Loading wall tiles from:', wallPath);
 		const pngBuffer = fs.readFileSync(wallPath);
 		const png = PNG.sync.read(pngBuffer);
@@ -254,42 +309,34 @@ export interface LoadedFloorTiles {
 }
 
 /**
- * Load floor tile patterns from floors.png (7 tiles, 16px each, horizontal strip)
+ * Load floor tile patterns from assets/floors/floor_*.png
  */
 export async function loadFloorTiles(
 	assetsRoot: string,
 ): Promise<LoadedFloorTiles | null> {
 	try {
-		const floorPath = path.join(assetsRoot, 'assets', 'floors.png');
-		if (!fs.existsSync(floorPath)) {
-			console.log('[AssetLoader] No floors.png found at:', floorPath);
+		const floorsDir = path.join(assetsRoot, 'assets', 'floors');
+		if (!fs.existsSync(floorsDir)) {
+			console.log('[AssetLoader] No floors/ directory found at:', floorsDir);
 			return null;
 		}
 
-		console.log('[AssetLoader] Loading floor tiles from:', floorPath);
-		const pngBuffer = fs.readFileSync(floorPath);
-		const png = PNG.sync.read(pngBuffer);
+		const entries = fs.readdirSync(floorsDir);
+		const floorFiles = entries
+			.map((entry) => ({ entry, match: /^floor_(\d+)\.png$/i.exec(entry) }))
+			.filter((item): item is { entry: string; match: RegExpExecArray } => item.match !== null)
+			.sort((a, b) => parseInt(a.match[1], 10) - parseInt(b.match[1], 10));
+
+		if (floorFiles.length === 0) {
+			console.log('[AssetLoader] No floor_N.png files found in floors/');
+			return null;
+		}
+
 		const sprites: string[][][] = [];
-		for (let t = 0; t < FLOOR_PATTERN_COUNT; t++) {
-			const sprite: string[][] = [];
-			for (let y = 0; y < FLOOR_TILE_SIZE; y++) {
-				const row: string[] = [];
-				for (let x = 0; x < FLOOR_TILE_SIZE; x++) {
-					const px = t * FLOOR_TILE_SIZE + x;
-					const idx = (y * png.width + px) * 4;
-					const r = png.data[idx];
-					const g = png.data[idx + 1];
-					const b = png.data[idx + 2];
-					const a = png.data[idx + 3];
-					if (a < PNG_ALPHA_THRESHOLD) {
-						row.push('');
-					} else {
-						row.push(`#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`.toUpperCase());
-					}
-				}
-				sprite.push(row);
-			}
-			sprites.push(sprite);
+		for (const floorFile of floorFiles) {
+			const floorPath = path.join(floorsDir, floorFile.entry);
+			const pngBuffer = fs.readFileSync(floorPath);
+			sprites.push(pngToSpriteData(pngBuffer, FLOOR_TILE_SIZE, FLOOR_TILE_SIZE));
 		}
 
 		console.log(`[AssetLoader] ✅ Loaded ${sprites.length} floor tile patterns`);
@@ -430,4 +477,159 @@ export function sendAssetsToWebview(
 	});
 
 	console.log(`📤 Sent ${assets.catalog.length} furniture assets to webview`);
+}
+
+interface ManifestAssetNode {
+	type: 'asset';
+	id: string;
+	file: string;
+	width: number;
+	height: number;
+	footprintW: number;
+	footprintH: number;
+	orientation?: string;
+	state?: string;
+	frame?: number;
+	mirrorSide?: boolean;
+}
+
+interface ManifestGroupNode {
+	type: 'group';
+	groupType: 'rotation' | 'state' | 'animation';
+	rotationScheme?: string;
+	orientation?: string;
+	state?: string;
+	members: ManifestNode[];
+}
+
+type ManifestNode = ManifestAssetNode | ManifestGroupNode;
+
+interface FurnitureManifestFile {
+	id: string;
+	name: string;
+	category: string;
+	canPlaceOnWalls: boolean;
+	canPlaceOnSurfaces: boolean;
+	backgroundTiles: number;
+	type: 'asset' | 'group';
+	file?: string;
+	width?: number;
+	height?: number;
+	footprintW?: number;
+	footprintH?: number;
+	groupType?: string;
+	rotationScheme?: string;
+	members?: ManifestNode[];
+}
+
+interface InheritedProps {
+	groupId: string;
+	name: string;
+	category: string;
+	canPlaceOnWalls: boolean;
+	canPlaceOnSurfaces: boolean;
+	backgroundTiles: number;
+	orientation?: string;
+	state?: string;
+	rotationScheme?: string;
+	animationGroup?: string;
+}
+
+function flattenManifest(manifest: FurnitureManifestFile): FurnitureAsset[] {
+	const inherited: InheritedProps = {
+		groupId: manifest.id,
+		name: manifest.name,
+		category: manifest.category,
+		canPlaceOnWalls: manifest.canPlaceOnWalls,
+		canPlaceOnSurfaces: manifest.canPlaceOnSurfaces,
+		backgroundTiles: manifest.backgroundTiles,
+	};
+
+	if (manifest.type === 'asset') {
+		return [{
+			id: manifest.id,
+			name: manifest.name,
+			label: manifest.name,
+			category: manifest.category,
+			file: manifest.file ?? `${manifest.id}.png`,
+			width: manifest.width!,
+			height: manifest.height!,
+			footprintW: manifest.footprintW!,
+			footprintH: manifest.footprintH!,
+			isDesk: manifest.category === 'desks',
+			canPlaceOnWalls: manifest.canPlaceOnWalls,
+			canPlaceOnSurfaces: manifest.canPlaceOnSurfaces,
+			backgroundTiles: manifest.backgroundTiles,
+			groupId: manifest.id,
+		}];
+	}
+
+	const rootGroup: ManifestGroupNode = {
+		type: 'group',
+		groupType: manifest.groupType as 'rotation' | 'state' | 'animation',
+		rotationScheme: manifest.rotationScheme,
+		members: manifest.members || [],
+	};
+	if (manifest.rotationScheme) {
+		inherited.rotationScheme = manifest.rotationScheme;
+	}
+	return flattenManifestNode(rootGroup, inherited);
+}
+
+function flattenManifestNode(node: ManifestNode, inherited: InheritedProps): FurnitureAsset[] {
+	if (node.type === 'asset') {
+		const orientation = node.orientation ?? inherited.orientation;
+		const state = node.state ?? inherited.state;
+		return [{
+			id: node.id,
+			name: inherited.name,
+			label: inherited.name,
+			category: inherited.category,
+			file: node.file,
+			width: node.width,
+			height: node.height,
+			footprintW: node.footprintW,
+			footprintH: node.footprintH,
+			isDesk: inherited.category === 'desks',
+			canPlaceOnWalls: inherited.canPlaceOnWalls,
+			canPlaceOnSurfaces: inherited.canPlaceOnSurfaces,
+			backgroundTiles: inherited.backgroundTiles,
+			groupId: inherited.groupId,
+			...(orientation ? { orientation } : {}),
+			...(state ? { state } : {}),
+			...(node.mirrorSide ? { mirrorSide: true } : {}),
+			...(inherited.rotationScheme ? { rotationScheme: inherited.rotationScheme } : {}),
+			...(inherited.animationGroup ? { animationGroup: inherited.animationGroup } : {}),
+			...(node.frame !== undefined ? { frame: node.frame } : {}),
+		}];
+	}
+
+	const results: FurnitureAsset[] = [];
+	for (const member of node.members) {
+		const childProps: InheritedProps = { ...inherited };
+		if (node.groupType === 'rotation' && node.rotationScheme) {
+			childProps.rotationScheme = node.rotationScheme;
+		}
+		if (node.groupType === 'state') {
+			if (node.orientation) {
+				childProps.orientation = node.orientation;
+			}
+			if (node.state) {
+				childProps.state = node.state;
+			}
+		}
+		if (node.groupType === 'animation') {
+			const orient = node.orientation ?? inherited.orientation ?? '';
+			const state = node.state ?? inherited.state ?? '';
+			childProps.animationGroup = `${inherited.groupId}_${orient}_${state}`.toUpperCase();
+			if (node.state) {
+				childProps.state = node.state;
+			}
+		}
+		if (node.orientation && !childProps.orientation) {
+			childProps.orientation = node.orientation;
+		}
+		results.push(...flattenManifestNode(member, childProps));
+	}
+	return results;
 }

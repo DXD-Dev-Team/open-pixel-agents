@@ -13,6 +13,20 @@ function getLayoutFilePath(): string {
 	return path.join(os.homedir(), LAYOUT_FILE_DIR, LAYOUT_FILE_NAME);
 }
 
+function isLegacyAssetLayout(layout: Record<string, unknown>): boolean {
+	const furniture = layout.furniture;
+	if (!Array.isArray(furniture)) {
+		return false;
+	}
+	return furniture.some((item) => {
+		if (!item || typeof item !== 'object') {
+			return false;
+		}
+		const type = (item as { type?: unknown }).type;
+		return typeof type === 'string' && type.startsWith('ASSET_');
+	});
+}
+
 export function readLayoutFromFile(): Record<string, unknown> | null {
 	const filePath = getLayoutFilePath();
 	try {
@@ -57,6 +71,11 @@ export function migrateAndLoadLayout(
 	// 1. Try file
 	const fromFile = readLayoutFromFile();
 	if (fromFile) {
+		if (defaultLayout && isLegacyAssetLayout(fromFile)) {
+			console.log('[Pixel Agents] Replacing legacy saved layout with bundled default layout');
+			writeLayoutToFile(defaultLayout);
+			return defaultLayout;
+		}
 		console.log('[Pixel Agents] Layout loaded from file');
 		return fromFile;
 	}
@@ -64,6 +83,12 @@ export function migrateAndLoadLayout(
 	// 2. Migrate from workspace state
 	const fromState = context.workspaceState.get<Record<string, unknown>>(WORKSPACE_KEY_LAYOUT);
 	if (fromState) {
+		if (defaultLayout && isLegacyAssetLayout(fromState)) {
+			console.log('[Pixel Agents] Replacing legacy workspace layout with bundled default layout');
+			writeLayoutToFile(defaultLayout);
+			context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);
+			return defaultLayout;
+		}
 		console.log('[Pixel Agents] Migrating layout from workspace state to file');
 		writeLayoutToFile(fromState);
 		context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);

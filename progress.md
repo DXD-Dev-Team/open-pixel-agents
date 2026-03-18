@@ -73,6 +73,9 @@ Last updated: 2026-03-17
 18. Fixed Windows OpenCode server startup to launch `opencode.cmd` and surface real spawn errors from the extension host
 19. Fixed Windows `.cmd` process launching by routing OpenCode server startup through `cmd.exe /c` instead of direct spawn
 20. Made OpenCode server startup shell-based across Windows and Unix-like systems, and increased readiness waiting for slow local startups
+21. Restored the upstream default furniture scene by loading manifest-based furniture assets, versioned default layouts, and upstream floors/walls asset folders
+22. Added legacy `ASSET_*` layout fallback so previously saved incompatible layouts reset to a valid bundled furniture scene
+23. Re-tightened VSIX packaging rules so the local `ref/` directory stays available in the repo but is excluded from packaged extensions
 
 #### In Progress
 
