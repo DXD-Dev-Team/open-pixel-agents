@@ -465,7 +465,7 @@ export function renderBubbles(
       const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
       const centerX = Math.round(offsetX + ch.x * zoom)
       const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - 18 * zoom)
-      const bubbleW = Math.round(26 * zoom)
+      const bubbleW = Math.round(38 * zoom)
       const bubbleH = Math.round(12 * zoom)
       const bubbleX = Math.round(centerX - bubbleW / 2)
 
@@ -480,7 +480,7 @@ export function renderBubbles(
       ctx.font = `${Math.max(8, Math.round(7 * zoom))}px monospace`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('OK', centerX, bubbleY + bubbleH / 2 + 1)
+      ctx.fillText('Done', centerX, bubbleY + bubbleH / 2 + 1)
       ctx.restore()
       continue
     }

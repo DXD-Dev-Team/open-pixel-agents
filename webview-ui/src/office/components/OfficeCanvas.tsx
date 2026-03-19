@@ -32,9 +32,11 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const offsetRef = useRef({ x: 0, y: 0 })
-  // Middle-mouse pan state (imperative, no re-renders)
+  // Drag-pan state (imperative, no re-renders)
   const isPanningRef = useRef(false)
+  const panButtonRef = useRef<number | null>(null)
   const panStartRef = useRef({ mouseX: 0, mouseY: 0, panX: 0, panY: 0 })
+  const suppressClickRef = useRef(false)
   // Delete/rotate button bounds (updated each frame by renderer)
   const deleteButtonBoundsRef = useRef<DeleteButtonBounds | null>(null)
   const rotateButtonBoundsRef = useRef<RotateButtonBounds | null>(null)
@@ -292,11 +294,14 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      // Handle middle-mouse panning
+      // Handle drag panning
       if (isPanningRef.current) {
         const dpr = window.devicePixelRatio || 1
         const dx = (e.clientX - panStartRef.current.mouseX) * dpr
         const dy = (e.clientY - panStartRef.current.mouseY) * dpr
+        if (Math.abs(dx) >= 2 || Math.abs(dy) >= 2) {
+          suppressClickRef.current = true
+        }
         panRef.current = clampPan(
           panStartRef.current.panX + dx,
           panStartRef.current.panY + dy,
@@ -401,12 +406,21 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       unlockAudio()
-      // Middle mouse button (button 1) starts panning
+      // Middle mouse button recenters the scene
       if (e.button === 1) {
         e.preventDefault()
+        officeState.cameraFollowId = null
+        panRef.current = { x: 0, y: 0 }
+        return
+      }
+
+      // Left mouse button starts panning in view mode
+      if (e.button === 0 && !isEditMode) {
         // Break camera follow on manual pan
         officeState.cameraFollowId = null
         isPanningRef.current = true
+        panButtonRef.current = 0
+        suppressClickRef.current = false
         panStartRef.current = {
           mouseX: e.clientX,
           mouseY: e.clientY,
@@ -488,8 +502,9 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
-      if (e.button === 1) {
+      if (panButtonRef.current === e.button) {
         isPanningRef.current = false
+        panButtonRef.current = null
         const canvas = canvasRef.current
         if (canvas) canvas.style.cursor = isEditMode ? 'crosshair' : 'default'
         return
@@ -543,6 +558,10 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       if (isEditMode) return // handled by mouseDown/mouseUp
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false
+        return
+      }
       const pos = screenToWorld(e.clientX, e.clientY)
       if (!pos) return
 
@@ -607,6 +626,8 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
 
   const handleMouseLeave = useCallback(() => {
     isPanningRef.current = false
+    panButtonRef.current = null
+    suppressClickRef.current = false
     isEraseDraggingRef.current = false
     editorState.isDragging = false
     editorState.wallDragAdding = null

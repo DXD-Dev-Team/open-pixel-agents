@@ -126,8 +126,24 @@ function orientationToFacing(orientation: string): Direction {
   }
 }
 
+function getAdjacentDeskFacing(tileCol: number, tileRow: number, deskTiles: Set<string>): Direction | null {
+  const dirs: Array<{ dc: number; dr: number; facing: Direction }> = [
+    { dc: 0, dr: -1, facing: Direction.UP },
+    { dc: 0, dr: 1, facing: Direction.DOWN },
+    { dc: -1, dr: 0, facing: Direction.LEFT },
+    { dc: 1, dr: 0, facing: Direction.RIGHT },
+  ]
+
+  for (const d of dirs) {
+    if (deskTiles.has(`${tileCol + d.dc},${tileRow + d.dr}`)) {
+      return d.facing
+    }
+  }
+  return null
+}
+
 /** Generate seats from chair furniture.
- *  Facing priority: 1) chair orientation, 2) adjacent desk, 3) forward (DOWN). */
+ *  Facing priority: 1) adjacent desk/work surface, 2) chair orientation, 3) forward (DOWN). */
 export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
   const seats = new Map<string, Seat>()
 
@@ -143,13 +159,6 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
     }
   }
 
-  const dirs: Array<{ dc: number; dr: number; facing: Direction }> = [
-    { dc: 0, dr: -1, facing: Direction.UP },    // desk is above chair → face UP
-    { dc: 0, dr: 1, facing: Direction.DOWN },   // desk is below chair → face DOWN
-    { dc: -1, dr: 0, facing: Direction.LEFT },   // desk is left of chair → face LEFT
-    { dc: 1, dr: 0, facing: Direction.RIGHT },   // desk is right of chair → face RIGHT
-  ]
-
   // For each chair, every footprint tile becomes a seat.
   // Multi-tile chairs (e.g. 2-tile couches) produce multiple seats.
   for (const item of furniture) {
@@ -162,20 +171,18 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
         const tileCol = item.col + dc
         const tileRow = item.row + dr
 
+        const deskFacing = getAdjacentDeskFacing(tileCol, tileRow, deskTiles)
+        const isWorkSeat = deskFacing !== null
+
         // Determine facing direction:
-        // 1) Chair orientation takes priority
-        // 2) Adjacent desk direction
+        // 1) Adjacent desk/work seat direction
+        // 2) Chair orientation
         // 3) Default forward (DOWN)
         let facingDir: Direction = Direction.DOWN
-        if (entry.orientation) {
+        if (deskFacing !== null) {
+          facingDir = deskFacing
+        } else if (entry.orientation) {
           facingDir = orientationToFacing(entry.orientation)
-        } else {
-          for (const d of dirs) {
-            if (deskTiles.has(`${tileCol + d.dc},${tileRow + d.dr}`)) {
-              facingDir = d.facing
-              break
-            }
-          }
         }
 
         // First seat uses chair uid (backward compat), subsequent use uid:N
@@ -185,7 +192,7 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
           seatCol: tileCol,
           seatRow: tileRow,
           facingDir,
-          isWorkSeat: dirs.some((d) => deskTiles.has(`${tileCol + d.dc},${tileRow + d.dr}`)),
+          isWorkSeat,
           assigned: false,
         })
         seatCount++

@@ -242,4 +242,4 @@ npx @vscode/vsce package
 
 ## Historical Note
 
-This repository was forked from a Claude Code-focused project, but the active runtime path is now OpenCode-based. Any documentation or code path that conflicts with that model should be treated as historical residue and updated accordingly.
+This repository was forked from the original pixel-agents project. The active product/runtime target in this repository is now OpenCode only. Any documentation or code path that conflicts with that model should be treated as historical residue and updated accordingly.

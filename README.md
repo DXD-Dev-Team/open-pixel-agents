@@ -1,146 +1,136 @@
-# Open Pixel Agents (OpenCode Fork)
+# Open Pixel Agents
 
-A VS Code extension that turns your OpenCode sessions into animated pixel art characters in a virtual office.
+- 简体中文
+- [English](README.en.md)
 
-Each OpenCode session you launch from the extension spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
+本项目 fork 自原始的 pixel-agents，并维护为 **仅支持 OpenCode** 的版本。
 
-This fork started from the original Open Pixel Agents project and adapts its visualization model to OpenCode's server API and event stream.
-
+Open Pixel Agents 是一个 VS Code 扩展，它会把 OpenCode session 可视化为虚拟办公室里的像素角色。每个 session 都会以一个角色的形式出现，可以行走、入座、显示状态气泡，并实时反映当前工作状态。
 
 ![Open Pixel Agents screenshot](webview-ui/public/Screenshot.jpg)
 
-## Features
+## 当前功能
 
-- **One session, one character** — every OpenCode session gets its own animated character
-- **Live activity tracking** — characters animate based on what the agent is actually doing (writing, reading, running commands)
-- **Office layout editor** — design your office with floors, walls, and furniture using a built-in editor
-- **Speech bubbles** — visual indicators when an agent is waiting for input or needs permission
-- **Sound notifications** — optional chime when an agent finishes its turn
-- **Sub-agent visualization** — OpenCode subtasks and child sessions spawn as separate characters linked to their parent
-- **Persistent layouts** — your office design is saved and shared across VS Code windows
-- **Diverse characters** — 6 diverse characters.
+- **仅支持 OpenCode runtime** —— 通过本地 OpenCode server API 和 SSE 事件流启动并可视化 OpenCode session
+- **一个 session 对应一个角色** —— 每个主 OpenCode session 都会变成办公室里的一个像素 agent
+- **子 agent 可视化** —— OpenCode 的 child session / subtask 会显示为临时 sub-agent 角色
+- **实时状态反馈** —— 角色会根据工作中、读取中、等待中、权限请求、重试、完成等状态变化
+- **workspace 级 session 持久化** —— 重新打开项目时，会重新连接已持久化的 agent session，除非用户在 UI 中显式删除
+- **终端集成** —— 每个 agent 都会打开对应的 VS Code terminal，并 attach 到对应的 OpenCode session
+- **窗口级 server 管理** —— 每个 VS Code 窗口维护自己的 OpenCode server 端口，并让 attach / API / SSE 使用同一端口
+- **工位分配与办公室模拟** —— agent 可以被选中、重新分配座位，并自动回到工位
+- **布局编辑器** —— 可直接在 webview 中编辑地板、墙体、家具和办公室布局
+- **布局导入/导出** —— 可以把办公室布局保存和共享为 JSON
+- **可选完成提示音** —— 工作完成时播放提示音
+- **鼠标视角控制** —— 左键拖动画面，中键回中，滚轮缩放
 
 <p align="center">
   <img src="webview-ui/public/characters.png" alt="Open Pixel Agents characters" width="320" height="72" style="image-rendering: pixelated;">
 </p>
 
-## Requirements
+## 环境要求
 
-- VS Code 1.50.0 or later
-- [OpenCode CLI](https://github.com/anomalyco/opencode) installed and available on your PATH
+- VS Code 1.50.0 或更高版本
+- 已安装 [OpenCode CLI](https://github.com/anomalyco/opencode)，并且可以通过 `PATH` 直接调用
 
-## Getting Started
+## 快速开始
 
-If you want to use, develop, or contribute to this fork:
-
-### Install from source
+### 从源码运行
 
 ```bash
-git clone https://github.com/pablodelucca/open-pixel-agents.git
+git clone https://github.com/inkbottle/open-pixel-agents.git
 cd open-pixel-agents
 npm install
 cd webview-ui && npm install && cd ..
 npm run build
 ```
 
-Then press **F5** in VS Code to launch the Extension Development Host.
+然后在 VS Code 中按 **F5** 启动 Extension Development Host。
 
-### Usage
+### 基本使用
 
-1. Open the **Open Pixel Agents** panel (it appears in the bottom panel area alongside your terminal)
-2. Click **+ Agent** to spawn a new OpenCode session and its character
-3. Start coding with OpenCode — watch the character react in real time
-4. Click a character to select it, then click a seat to reassign it
-5. Click **Layout** to open the office editor and customize your space
+1. 打开 **Open Pixel Agents** 面板
+2. 点击 **+ Agent** 创建新的 OpenCode session
+3. 在 attach 的 terminal 中正常使用 OpenCode
+4. 观察办公室如何实时反映 session 和 subtask 的状态
+5. 点击 agent 可以聚焦/选中它
+6. 点击座位可以给选中的 agent 重新分配工位
+7. 点击 agent 的关闭按钮会移除该角色，并删除对应的持久化 session 绑定
 
-## Layout Editor
+## 工作方式
 
-The built-in editor lets you design your office:
+当你创建一个 agent 时，扩展会：
 
-- **Floor** — Full HSB color control
-- **Walls** — Auto-tiling walls with color customization
-- **Tools** — Select, paint, erase, place, eyedropper, pick
-- **Undo/Redo** — 50 levels with Ctrl+Z / Ctrl+Y
-- **Export/Import** — Share layouts as JSON files via the Settings modal
+1. 确保当前 VS Code 窗口有可用的 OpenCode server
+2. 为当前窗口解析一个本地端口
+3. 通过 HTTP 创建新的 OpenCode session
+4. 打开一个与 session 同名的 VS Code terminal
+5. 执行：
 
-The grid is expandable up to 64×64 tiles. Click the ghost border outside the current grid to grow it.
+```bash
+opencode attach http://127.0.0.1:<resolved-port> --session <session-id> --dir "<workspace>"
+```
 
-### Office Assets
+6. 订阅 OpenCode 的 `/global/event` SSE 事件流
+7. 把 session / tool / subtask / permission 事件映射为办公室状态、覆盖层和角色动画
 
-The office tileset used in this project and available via the extension is **[Office Interior Tileset (16x16)](https://donarg.itch.io/officetileset)** by **Donarg**, available on itch.io for **$2 USD**.
+session 和 terminal 使用以下命名格式：
 
-This is the only part of the project that is not freely available. The tileset is not included in this repository due to its license. To use Open Pixel Agents locally with the full set of office furniture and decorations, purchase the tileset and run the asset import pipeline:
+```text
+Open Pixel Agent - <project-name>: <index>
+```
+
+重新打开同一个项目时，如果这些 OpenCode session 仍然存在，扩展会自动重连已持久化的 agent。若用户在 UI 中删除像素小人，扩展会删除对应的持久化记录，并删除相应的 OpenCode session。
+
+## 布局编辑器
+
+内置编辑器支持：
+
+- 地板绘制
+- 墙体绘制
+- 擦除 / 选择 / 吸取 / 放置工具
+- 家具移动 / 旋转 / 删除
+- 撤销 / 重做
+- 布局导入 / 导出
+- 最大 64×64 的可扩展网格编辑
+
+## 办公室素材
+
+可选素材导入流程使用的办公室 tileset 为 **[Office Interior Tileset (16x16)](https://donarg.itch.io/officetileset)**，作者是 **Donarg**。
+
+该 tileset 不包含在当前仓库中。如果你想在本地使用完整家具目录，需要先购买该素材包，然后执行：
 
 ```bash
 npm run import-tileset
 ```
 
-Fair warning: the import pipeline is not exactly straightforward — the out-of-the-box tileset assets aren't the easiest to work with, and while I've done my best to make the process as smooth as possible, it may require some manual tweaking. If you have experience creating pixel art office assets and would like to contribute freely usable tilesets for the community, that would be hugely appreciated.
+即使不导入该 tileset，扩展仍可使用仓库内置的默认素材和默认布局正常工作。
 
-The extension will still work without the tileset — you'll get the default characters and basic layout, but the full furniture catalog requires the imported assets.
+## 开发
 
-## How It Works
+```bash
+npm install
+cd webview-ui && npm install && cd ..
+npm run build
+```
 
-Open Pixel Agents talks to OpenCode through its local server API.
+扩展打包命令：
 
-When you click **+ Agent**, the extension:
+```bash
+npx @vscode/vsce package
+```
 
-1. Ensures an OpenCode server is running
-2. Creates a new OpenCode session via HTTP
-3. Opens a VS Code terminal attached to that session
-4. Subscribes to OpenCode's SSE event stream
-5. Maps OpenCode session, tool, permission, and subtask events into character animations and UI state
+## 当前范围
 
-The extension prefers OpenCode's default localhost port and, if it is already occupied, automatically tries the next port number so multiple VS Code windows can run side by side. Each VS Code window keeps its own resolved OpenCode server port rather than intentionally sharing another window's server. The attach command and all API/SSE traffic stay aligned to the same resolved port for that window.
+- OpenCode 是唯一支持的 runtime
+- 项目核心是对 OpenCode session 的 VS Code webview 可视化
+- 内部仍保留少量历史项目结构和命名，但当前实际运行链路已经是 OpenCode
 
-New sessions are named `Open Pixel Agent - <project-name>: <index>`. Agent/session bindings are persisted per workspace, so reopening the project reattaches those sessions by default. Removing a pixel agent from the UI deletes the underlying OpenCode session and clears its persisted binding.
+## 作者
 
-The webview runs a lightweight game loop with canvas rendering, BFS pathfinding, and a character state machine (idle → walk → type/read). Everything is pixel-perfect at integer zoom levels.
-
-## Tech Stack
-
-- **Extension**: TypeScript, VS Code Webview API, esbuild
-- **Webview**: React 19, TypeScript, Vite, Canvas 2D
-
-## Known Limitations
-
-- **Hybrid codebase** — the fork now supports OpenCode at runtime, but parts of the old Claude-oriented architecture still exist internally and need cleanup.
-- **Session restore depth** — restored agents recover session identity and idle/active state, but richer in-flight tool history is not fully replayed yet.
-- **Single-root launch flow** — in multi-root workspaces the extension currently launches agents in the first workspace folder.
-- **Windows-first testing** — the extension has mainly been tested on Windows 11. It may work on macOS or Linux, but there could still be path, terminal, or environment differences.
-
-## Roadmap
-
-There are several areas where contributions would be very welcome:
-
-- **Improve session restore** — rebuild richer live tool and subtask state after reloading VS Code
-- **Provider abstraction** — separate OpenCode integration cleanly from any legacy Claude-era implementation details
-- **Community assets** — freely usable pixel art tilesets or characters that anyone can use without purchasing third-party assets
-- **Agent creation and definition** — define agents with custom skills, system prompts, names, and skins before launching them
-- **Desks as directories** — click on a desk to select a working directory, drag and drop agents or click-to-assign to move them to specific desks/projects
-- **Multi-root workspace picker** — choose which workspace folder a new OpenCode session should run in
-- **Git worktree support** — agents working in different worktrees to avoid conflict from parallel work on the same files
-- **Support for other agentic frameworks** — beyond OpenCode, adapt the office visualization model to other agent runtimes as well
-
-If any of these interest you, feel free to open an issue or submit a PR.
-
-## Contributions
-
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for instructions on how to contribute to this project.
-
-Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
-
-## Supporting the Project
-
-If you find Open Pixel Agents useful, consider supporting its development:
-
-<a href="https://github.com/sponsors/pablodelucca">
-  <img src="https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github" alt="GitHub Sponsors">
-</a>
-<a href="https://ko-fi.com/pablodelucca">
-  <img src="https://img.shields.io/badge/Support-Ko--fi-ff5e5b?logo=ko-fi" alt="Ko-fi">
-</a>
+- **Shawn Fang**
+- 仓库地址：https://github.com/inkbottle/open-pixel-agents.git
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+本项目基于 [MIT License](LICENSE) 开源。

@@ -1,8 +1,8 @@
 {
   "name": "open-pixel-agents",
-  "displayName": "Open Open Pixel Agents",
-  "description": "Pixel art office where your OpenCode agents come to life as animated characters",
-  "version": "1.0.0",
+  "displayName": "Open Pixel Agents",
+  "description": "在像素风办公室中将 OpenCode agents 可视化为动态角色的 VS Code 扩展",
+  "version": "0.0.1",
   "publisher": "inkbottle",
   "repository": {
     "type": "git",
