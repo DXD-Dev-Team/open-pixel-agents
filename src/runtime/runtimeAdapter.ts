@@ -70,6 +70,8 @@ export interface RuntimeAdapter {
 	ensureServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void>;
 	getServerPort(): number | null;
 	createSession(title?: string): Promise<RuntimeSession>;
+	getSession(sessionId: string): Promise<RuntimeSession>;
+	deleteSession(sessionId: string): Promise<void>;
 	buildAttachCommand(sessionId: string, cwd?: string): string;
 	subscribeToEvents(
 		onEvent: (event: RuntimeGlobalEvent) => void,

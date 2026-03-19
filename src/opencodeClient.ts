@@ -96,12 +96,16 @@ function getOpenCodeServerCommand(port: number): string {
 	return `${getOpenCodeExecutable()} --hostname ${OPENCODE_SERVER_HOST} --port ${port}`;
 }
 
+function findServerTerminalByPort(port: number): vscode.Terminal | undefined {
+	return vscode.window.terminals.find((terminal) => terminal.name === getServerTerminalName(port));
+}
+
 function ensureOpenCodeServerTerminal(cwd: string, port: number, output?: vscode.OutputChannel): vscode.Terminal {
 	if (serverTerminal) {
 		return serverTerminal;
 	}
 
-	const existing = vscode.window.terminals.find((terminal) => terminal.name === getServerTerminalName(port));
+	const existing = findServerTerminalByPort(port);
 	if (existing) {
 		serverTerminal = existing;
 		return existing;
@@ -159,7 +163,7 @@ async function resolveOpenCodeServerPort(output?: vscode.OutputChannel): Promise
 		if (await isOpenCodeServerHealthyAt(port) || await isPortAvailable(port)) {
 			resolvedServerPort = port;
 			serverTerminal = terminal;
-			output?.appendLine(`[Open Pixel Agents] Reusing OpenCode server port ${port} from existing terminal "${terminal.name}"`);
+			output?.appendLine(`[Open Pixel Agents] Reusing window-local OpenCode server port ${port} from terminal "${terminal.name}"`);
 			return port;
 		}
 	}
@@ -184,16 +188,41 @@ async function resolveOpenCodeServerPortWithPreference(preferredPort: number | u
 	}
 
 	if (preferredPort !== undefined) {
-		if (await isOpenCodeServerHealthyAt(preferredPort) || await isPortAvailable(preferredPort)) {
+		const existingTerminal = findServerTerminalByPort(preferredPort);
+		if (existingTerminal && (await isOpenCodeServerHealthyAt(preferredPort) || await isPortAvailable(preferredPort))) {
 			resolvedServerPort = preferredPort;
-			const existing = vscode.window.terminals.find((terminal) => terminal.name === getServerTerminalName(preferredPort));
-			if (existing) {
-				serverTerminal = existing;
-			}
+			serverTerminal = existingTerminal;
 			output?.appendLine(`[Open Pixel Agents] Using preferred OpenCode server port ${preferredPort}`);
 			return preferredPort;
 		}
-		output?.appendLine(`[Open Pixel Agents] Preferred OpenCode server port ${preferredPort} is unavailable, scanning for another port`);
+		if (!existingTerminal && !(await isPortAvailable(preferredPort))) {
+			output?.appendLine(`[Open Pixel Agents] Preferred OpenCode server port ${preferredPort} is occupied by another process, allocating a new window-local port`);
+		} else if (existingTerminal) {
+			output?.appendLine(`[Open Pixel Agents] Preferred OpenCode server port ${preferredPort} is unavailable, scanning for another port`);
+		}
+
+		for (let offset = 0; offset < OPENCODE_SERVER_PORT_SCAN_LIMIT; offset += 1) {
+			const port = preferredPort + offset;
+			const terminal = findServerTerminalByPort(port);
+			if (terminal) {
+				if (await isOpenCodeServerHealthyAt(port) || await isPortAvailable(port)) {
+					resolvedServerPort = port;
+					serverTerminal = terminal;
+					output?.appendLine(`[Open Pixel Agents] Reusing window-local OpenCode server port ${port} from terminal "${terminal.name}"`);
+					return port;
+				}
+				continue;
+			}
+			if (await isPortAvailable(port)) {
+				resolvedServerPort = port;
+				if (port !== preferredPort) {
+					output?.appendLine(`[Open Pixel Agents] Allocated new OpenCode server port ${port} for this window (preferred ${preferredPort} unavailable)`);
+				}
+				return port;
+			}
+		}
+
+		throw new Error(`Failed to find an available window-local OpenCode server port starting at ${preferredPort}`);
 	}
 
 	return resolveOpenCodeServerPort(output);
@@ -232,6 +261,13 @@ async function fetchJson<T>(pathname: string, init?: RequestInit): Promise<T> {
 		throw new Error(`OpenCode request failed: ${response.status} ${response.statusText}`);
 	}
 	return response.json() as Promise<T>;
+}
+
+async function fetchVoid(pathname: string, init?: RequestInit): Promise<void> {
+	const response = await fetch(`${getServerUrl()}${pathname}`, init);
+	if (!response.ok) {
+		throw new Error(`OpenCode request failed: ${response.status} ${response.statusText}`);
+	}
 }
 
 export async function isOpenCodeServerHealthy(): Promise<boolean> {
@@ -293,6 +329,14 @@ export async function createOpenCodeSession(title?: string): Promise<OpenCodeSes
 		method: 'POST',
 		body: JSON.stringify(title ? { title } : {}),
 	});
+}
+
+export async function getOpenCodeSession(sessionId: string): Promise<OpenCodeSession> {
+	return fetchJson<OpenCodeSession>(`/session/${sessionId}`);
+}
+
+export async function deleteOpenCodeSession(sessionId: string): Promise<void> {
+	await fetchVoid(`/session/${sessionId}`, { method: 'DELETE' });
 }
 
 export async function getOpenCodeSessionStatuses(): Promise<Record<string, OpenCodeSessionStatus>> {

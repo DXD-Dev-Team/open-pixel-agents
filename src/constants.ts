@@ -36,4 +36,3 @@ export const WORKSPACE_KEY_AGENTS = 'open-pixel-agents.agents';
 export const WORKSPACE_KEY_AGENT_SEATS = 'open-pixel-agents.agentSeats';
 export const WORKSPACE_KEY_LAYOUT = 'open-pixel-agents.layout';
 export const WORKSPACE_KEY_OPENCODE_SERVER_PORT = 'open-pixel-agents.opencodeServerPort';
-export const TERMINAL_NAME_PREFIX = 'OpenCode';

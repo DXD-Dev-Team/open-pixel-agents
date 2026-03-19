@@ -8,7 +8,7 @@ VS Code extension with an embedded React webview: a pixel-art office where OpenC
 - **UI**: VS Code webview + React + Canvas 2D office simulation
 - **Agent model**: one OpenCode session maps to one primary character
 - **Subtask model**: OpenCode child sessions/subtasks map to sub-agent characters
-- **Persistence**: layout and seat assignments are persisted; session bindings are restored across reloads when terminals still exist
+- **Persistence**: layout, seat assignments, and agent session bindings are persisted; reopening the project reattaches to persisted sessions unless the user explicitly deletes an agent from the UI
 
 This file reflects the **current** project state. It replaces the old Claude JSONL-based notes.
 
@@ -102,9 +102,16 @@ opencode attach http://127.0.0.1:<resolved-port> --session <session-id> --dir "<
 
 7. Agent is created immediately in the office
 
+Session titles use the format:
+
+```text
+Open Pixel Agent - <project-name>: <index>
+```
+
 Notes:
 
-- The backend starts OpenCode on `127.0.0.1`, preferring the default port and incrementing by `+1` when that port is already occupied.
+- The backend starts a window-local OpenCode server on `127.0.0.1`, preferring the default port and incrementing by `+1` when that port is already occupied by another process.
+- If this VS Code window already has its own OpenCode server terminal, it reuses that server; it does not intentionally attach to a server started by a different VS Code window.
 - The attach command, HTTP API calls, restore flow, and SSE subscription all use the same resolved port for the current VS Code window.
 
 ---
@@ -140,12 +147,16 @@ Restore no longer relies on transcript files.
 
 On reload:
 
-1. Existing terminals are matched against persisted agent records
-2. Session IDs are restored into in-memory agent state
-3. Current session status is fetched from `/session/status`
-4. Session message history is fetched from `/session/:id/message`
-5. Child sessions are fetched from `/session/:id/children`
-6. Parent and child messages are replayed into the webview protocol to rebuild active tools/subtasks
+1. Persisted agent records are loaded from workspace state
+2. The extension verifies each persisted OpenCode session still exists
+3. Missing terminals are recreated and reattached with `opencode attach ... --session <id>`
+4. Session IDs are restored into in-memory agent state
+5. Current session status is fetched from `/session/status`
+6. Session message history is fetched from `/session/:id/message`
+7. Child sessions are fetched from `/session/:id/children`
+8. Parent and child messages are replayed into the webview protocol to rebuild active tools/subtasks
+
+If the user deletes a pixel agent from the UI, the extension deletes the corresponding OpenCode session and removes its persisted agent record.
 
 This provides richer restore than the initial OpenCode port, though permission restore is still primarily live-event driven.
 

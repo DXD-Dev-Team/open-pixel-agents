@@ -40,6 +40,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	runtimeEvents: { dispose: () => void } | null = null;
 	readonly output = vscode.window.createOutputChannel('Open Pixel Agents');
 	runtimeController: RuntimeController | null = null;
+	isDisposing = false;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -57,6 +58,28 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	private persistAgents = (): void => {
 		persistAgents(this.agents, this.context);
 	};
+
+	private removeAgentSeatMeta(agentId: number): void {
+		const agentMeta = this.context.workspaceState.get<Record<string, { palette?: number; seatId?: string }>>(WORKSPACE_KEY_AGENT_SEATS, {});
+		if (!(String(agentId) in agentMeta)) {
+			return;
+		}
+		const nextMeta = { ...agentMeta };
+		delete nextMeta[String(agentId)];
+		void this.context.workspaceState.update(WORKSPACE_KEY_AGENT_SEATS, nextMeta);
+	}
+
+	private removeAgentUi(agentId: number, shouldPersist: boolean): void {
+		this.removeAgentSeatMeta(agentId);
+		removeAgent(
+			agentId, this.agents,
+			this.waitingTimers, this.permissionTimers,
+			this.persistAgents,
+			shouldPersist,
+		);
+		this.runtimeController?.removeAgent(agentId);
+		this.webview?.postMessage({ type: 'agentClosed', id: agentId });
+	}
 
 	private get controller(): RuntimeController {
 		if (!this.runtimeController) {
@@ -92,7 +115,20 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			} else if (message.type === 'closeAgent') {
 				const agent = this.agents.get(message.id);
 				if (agent) {
+					let deleteFailed = false;
+					if (agent.sessionId) {
+						try {
+							await this.runtime.deleteSession(agent.sessionId);
+						} catch (error) {
+							deleteFailed = true;
+							this.output.appendLine(`[Open Pixel Agents] Failed to delete OpenCode session for agent ${agent.id}: ${String(error)}`);
+						}
+					}
+					this.removeAgentUi(agent.id, true);
 					agent.terminalRef.dispose();
+					if (deleteFailed) {
+						void vscode.window.showWarningMessage('Open Pixel Agents: The pixel agent was removed, but deleting the OpenCode session failed or it no longer existed.');
+					}
 				}
 			} else if (message.type === 'saveAgentSeats') {
 				// Store seat assignments in a separate key (never touched by persistAgents)
@@ -118,11 +154,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						void vscode.window.showErrorMessage('Open Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Open Pixel Agents output logs.');
 					}
 				}
-				restoreAgents(
+				await restoreAgents(
+					this.runtime,
 					this.context,
 					this.nextAgentId, this.nextTerminalIndex,
 					this.agents, this.waitingTimers, this.permissionTimers,
-					this.webview, this.persistAgents,
+					this.webview, this.persistAgents, this.output,
 				);
 				for (const agent of this.agents.values()) {
 					this.controller.registerAgent(agent);
@@ -335,13 +372,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					if (this.activeAgentId.current === id) {
 						this.activeAgentId.current = null;
 					}
-					removeAgent(
-						id, this.agents,
-						this.waitingTimers, this.permissionTimers,
-						this.persistAgents,
-					);
-					this.runtimeController?.removeAgent(id);
-					webviewView.webview.postMessage({ type: 'agentClosed', id });
+					this.removeAgentUi(id, !this.isDisposing);
 				}
 			}
 		});
@@ -390,6 +421,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 		dispose() {
+		this.isDisposing = true;
 		this.runtimeEvents?.dispose();
 		this.runtimeEvents = null;
 		this.runtimeController?.dispose();
@@ -402,6 +434,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				id, this.agents,
 				this.waitingTimers, this.permissionTimers,
 				this.persistAgents,
+				false,
 			);
 		}
 	}

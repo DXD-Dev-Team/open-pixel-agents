@@ -396,7 +396,7 @@ npm run build
 opencode serve --hostname 127.0.0.1 --port <resolved-port>
 ```
 
-其中 `<resolved-port>` 表示当前 VS Code 窗口选中的本地端口：优先使用默认端口，若被占用则依次尝试 `+1`。
+其中 `<resolved-port>` 表示当前 VS Code 窗口选中的本地端口：优先使用默认端口，若被占用则依次尝试 `+1`。每个 VS Code 窗口优先复用自己已有的 OpenCode server terminal，不会刻意复用其他窗口已启动的 server。
 
 3. 创建一个新的 OpenCode session
 4. 打开一个 VS Code terminal

@@ -1,16 +1,51 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { AgentState, PersistedAgent } from './types.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { cancelWaitingTimer, cancelPermissionTimer } from './timerManager.js';
-import { TERMINAL_NAME_PREFIX, WORKSPACE_KEY_AGENTS, WORKSPACE_KEY_AGENT_SEATS } from './constants.js';
+import { WORKSPACE_KEY_AGENTS, WORKSPACE_KEY_AGENT_SEATS } from './constants.js';
 import { migrateAndLoadLayout } from './layoutPersistence.js';
 
-	export function getProjectDirPath(cwd?: string): string | null {
+export function getProjectDirPath(cwd?: string): string | null {
 	const workspacePath = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 	if (!workspacePath) {
 		return null;
 	}
 	return workspacePath;
+}
+
+function getProjectName(cwd: string): string {
+	const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd));
+	if (workspaceFolder?.name) {
+		return workspaceFolder.name;
+	}
+	return path.basename(cwd);
+}
+
+function getAgentSessionTitle(cwd: string, idx: number): string {
+	return `Open Pixel Agent - ${getProjectName(cwd)}: ${idx}`;
+}
+
+function getAgentTerminalName(cwd: string, idx: number): string {
+	return getAgentSessionTitle(cwd, idx);
+}
+
+function createAgentState(id: number, terminal: vscode.Terminal, projectDir: string, sessionId: string | undefined, serverPort: number | undefined): AgentState {
+	return {
+		id,
+		terminalRef: terminal,
+		sessionId,
+		projectDir,
+		serverPort,
+		activeToolIds: new Set(),
+		activeToolStatuses: new Map(),
+		activeToolNames: new Map(),
+		activeSubagentToolIds: new Map(),
+		activeSubagentToolNames: new Map(),
+		isWaiting: false,
+		permissionSent: false,
+		hadToolsInTurn: false,
+	};
 }
 
 export async function launchNewTerminal(
@@ -35,9 +70,10 @@ export async function launchNewTerminal(
 
 	await runtime.ensureServer(cwd, output);
 	const serverPort = runtime.getServerPort() ?? undefined;
-	const session = await runtime.createSession(`Pixel Agent ${idx}`);
+	const title = getAgentSessionTitle(cwd, idx);
+	const session = await runtime.createSession(title);
 	const terminal = vscode.window.createTerminal({
-		name: `${TERMINAL_NAME_PREFIX} #${idx}`,
+		name: getAgentTerminalName(cwd, idx),
 		cwd,
 	});
 	terminal.show(true);
@@ -50,21 +86,7 @@ export async function launchNewTerminal(
 	}
 
 	const id = nextAgentIdRef.current++;
-	const agent: AgentState = {
-		id,
-		terminalRef: terminal,
-		sessionId: session.id,
-		projectDir,
-		serverPort,
-		activeToolIds: new Set(),
-		activeToolStatuses: new Map(),
-		activeToolNames: new Map(),
-		activeSubagentToolIds: new Map(),
-		activeSubagentToolNames: new Map(),
-		isWaiting: false,
-		permissionSent: false,
-		hadToolsInTurn: false,
-	};
+	const agent = createAgentState(id, terminal, projectDir, session.id, serverPort);
 
 	agents.set(id, agent);
 	activeAgentIdRef.current = id;
@@ -80,6 +102,7 @@ export function removeAgent(
 	waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	persistAgents: () => void,
+	shouldPersist = true,
 ): void {
 	const agent = agents.get(agentId);
 	if (!agent) {
@@ -92,7 +115,9 @@ export function removeAgent(
 
 	// Remove from maps
 	agents.delete(agentId);
-	persistAgents();
+	if (shouldPersist) {
+		persistAgents();
+	}
 }
 
 export function persistAgents(
@@ -112,7 +137,8 @@ export function persistAgents(
 	context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
 }
 
-export function restoreAgents(
+export async function restoreAgents(
+	runtime: RuntimeAdapter,
 	context: vscode.ExtensionContext,
 	nextAgentIdRef: { current: number },
 	nextTerminalIndexRef: { current: number },
@@ -121,7 +147,8 @@ export function restoreAgents(
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	webview: vscode.Webview | undefined,
 	doPersist: () => void,
-): void {
+	output?: vscode.OutputChannel,
+): Promise<void> {
 	const persisted = context.workspaceState.get<PersistedAgent[]>(WORKSPACE_KEY_AGENTS, []);
 	if (persisted.length === 0) {
 		return;
@@ -132,26 +159,30 @@ export function restoreAgents(
 	let maxIdx = 0;
 
 	for (const p of persisted) {
-		const terminal = liveTerminals.find(t => t.name === p.terminalName);
-		if (!terminal) {
+		if (!p.sessionId) {
+			output?.appendLine(`[Open Pixel Agents] Skipping persisted agent ${p.id} with no session id`);
 			continue;
 		}
 
-		const agent: AgentState = {
-			id: p.id,
-			terminalRef: terminal,
-			sessionId: p.sessionId,
-			projectDir: p.projectDir,
-			serverPort: p.serverPort,
-			activeToolIds: new Set(),
-			activeToolStatuses: new Map(),
-			activeToolNames: new Map(),
-			activeSubagentToolIds: new Map(),
-			activeSubagentToolNames: new Map(),
-			isWaiting: false,
-			permissionSent: false,
-			hadToolsInTurn: false,
-		};
+		try {
+			await runtime.getSession(p.sessionId);
+		} catch (error) {
+			output?.appendLine(`[Open Pixel Agents] Removing stale persisted agent ${p.id}; session ${p.sessionId} is unavailable: ${String(error)}`);
+			continue;
+		}
+
+		let terminal = liveTerminals.find(t => t.name === p.terminalName);
+		if (!terminal) {
+			terminal = vscode.window.createTerminal({
+				name: p.terminalName,
+				cwd: p.projectDir,
+			});
+			terminal.show(false);
+			terminal.sendText(runtime.buildAttachCommand(p.sessionId, p.projectDir));
+			output?.appendLine(`[Open Pixel Agents] Reattached persisted agent ${p.id} to session ${p.sessionId}`);
+		}
+
+		const agent = createAgentState(p.id, terminal, p.projectDir, p.sessionId, p.serverPort);
 
 		agents.set(p.id, agent);
 		console.log(`[Open Pixel Agents] Restored agent ${p.id} → terminal "${p.terminalName}" session=${p.sessionId ?? 'unknown'}`);
@@ -159,8 +190,7 @@ export function restoreAgents(
 		if (p.id > maxId) {
 			maxId = p.id;
 		}
-		// Extract terminal index from name like "OpenCode #3"
-		const match = p.terminalName.match(/#(\d+)$/);
+		const match = p.terminalName.match(/: (\d+)$/);
 		if (match) {
 			const idx = parseInt(match[1], 10);
 			if (idx > maxIdx) {

@@ -1,9 +1,11 @@
 import type * as vscode from 'vscode';
 import {
 	createOpenCodeSession,
+	deleteOpenCodeSession,
 	ensureOpenCodeServer,
 	getCurrentOpenCodeServerPort,
 	getOpenCodeAttachCommand,
+	getOpenCodeSession,
 	getOpenCodeSessionChildren,
 	getOpenCodeSessionMessages,
 	getOpenCodeSessionStatuses,
@@ -31,6 +33,14 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 
 	async createSession(title?: string): Promise<RuntimeSession> {
 		return createOpenCodeSession(title);
+	}
+
+	async getSession(sessionId: string): Promise<RuntimeSession> {
+		return getOpenCodeSession(sessionId);
+	}
+
+	async deleteSession(sessionId: string): Promise<void> {
+		await deleteOpenCodeSession(sessionId);
 	}
 
 	buildAttachCommand(sessionId: string, cwd?: string): string {
