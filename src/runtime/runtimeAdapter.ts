@@ -67,7 +67,8 @@ export interface RuntimeSessionSnapshot {
 
 export interface RuntimeAdapter {
 	readonly id: string;
-	ensureServer(cwd: string, output?: vscode.OutputChannel): Promise<void>;
+	ensureServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void>;
+	getServerPort(): number | null;
 	createSession(title?: string): Promise<RuntimeSession>;
 	buildAttachCommand(sessionId: string, cwd?: string): string;
 	subscribeToEvents(

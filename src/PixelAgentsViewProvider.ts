@@ -13,7 +13,7 @@ import {
 	getProjectDirPath,
 } from './agentManager.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
-import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED } from './constants.js';
+import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, WORKSPACE_KEY_OPENCODE_SERVER_PORT } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
@@ -105,9 +105,14 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
 			} else if (message.type === 'webviewReady') {
 				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+				const preferredPort = this.context.workspaceState.get<number | undefined>(WORKSPACE_KEY_OPENCODE_SERVER_PORT, undefined);
 				if (workspaceRoot) {
 					try {
-						await this.runtime.ensureServer(workspaceRoot, this.output);
+						await this.runtime.ensureServer(workspaceRoot, this.output, preferredPort);
+						const activePort = this.runtime.getServerPort();
+						if (activePort !== null) {
+							void this.context.workspaceState.update(WORKSPACE_KEY_OPENCODE_SERVER_PORT, activePort);
+						}
 					} catch (error) {
 						this.output.appendLine(`[Open Pixel Agents] Failed to start OpenCode server: ${String(error)}`);
 						void vscode.window.showErrorMessage('Open Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Open Pixel Agents output logs.');
@@ -302,7 +307,29 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		});
 
 		vscode.window.onDidCloseTerminal((closed) => {
-			resetOpenCodeServerTerminal(closed);
+			const serverClose = resetOpenCodeServerTerminal(closed);
+			if (serverClose.wasServerTerminal) {
+				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+				if (workspaceRoot) {
+					void (async () => {
+						try {
+							await this.runtime.ensureServer(workspaceRoot, this.output, serverClose.port ?? undefined);
+							const activePort = this.runtime.getServerPort();
+							if (activePort !== null) {
+								await this.context.workspaceState.update(WORKSPACE_KEY_OPENCODE_SERVER_PORT, activePort);
+							}
+							this.runtimeEvents?.dispose();
+							this.runtimeEvents = null;
+							this.startRuntimeEvents();
+							await this.controller.hydrateAll().catch((error) => {
+								this.output.appendLine(`[Open Pixel Agents] Failed to re-hydrate after OpenCode server restart: ${String(error)}`);
+							});
+						} catch (error) {
+							this.output.appendLine(`[Open Pixel Agents] Failed to restart OpenCode server after terminal close: ${String(error)}`);
+						}
+					})();
+				}
+			}
 			for (const [id, agent] of this.agents) {
 				if (agent.terminalRef === closed) {
 					if (this.activeAgentId.current === id) {

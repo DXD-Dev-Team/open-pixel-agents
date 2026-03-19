@@ -91,6 +91,8 @@ When you click **+ Agent**, the extension:
 4. Subscribes to OpenCode's SSE event stream
 5. Maps OpenCode session, tool, permission, and subtask events into character animations and UI state
 
+The extension prefers OpenCode's default localhost port and, if it is already occupied, automatically tries the next port number so multiple VS Code windows can run side by side. The attach command and all API/SSE traffic stay aligned to the same resolved port for that window.
+
 The webview runs a lightweight game loop with canvas rendering, BFS pathfinding, and a character state machine (idle → walk → type/read). Everything is pixel-perfect at integer zoom levels.
 
 ## Tech Stack

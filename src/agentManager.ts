@@ -34,6 +34,7 @@ export async function launchNewTerminal(
 	}
 
 	await runtime.ensureServer(cwd, output);
+	const serverPort = runtime.getServerPort() ?? undefined;
 	const session = await runtime.createSession(`Pixel Agent ${idx}`);
 	const terminal = vscode.window.createTerminal({
 		name: `${TERMINAL_NAME_PREFIX} #${idx}`,
@@ -54,6 +55,7 @@ export async function launchNewTerminal(
 		terminalRef: terminal,
 		sessionId: session.id,
 		projectDir,
+		serverPort,
 		activeToolIds: new Set(),
 		activeToolStatuses: new Map(),
 		activeToolNames: new Map(),
@@ -104,6 +106,7 @@ export function persistAgents(
 			terminalName: agent.terminalRef.name,
 			sessionId: agent.sessionId,
 			projectDir: agent.projectDir,
+			serverPort: agent.serverPort,
 		});
 	}
 	context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
@@ -139,6 +142,7 @@ export function restoreAgents(
 			terminalRef: terminal,
 			sessionId: p.sessionId,
 			projectDir: p.projectDir,
+			serverPort: p.serverPort,
 			activeToolIds: new Set(),
 			activeToolStatuses: new Map(),
 			activeToolNames: new Map(),

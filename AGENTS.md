@@ -97,10 +97,15 @@ Clicking **+ Agent** triggers:
 6. Backend runs:
 
 ```bash
-opencode attach http://127.0.0.1:4096 --session <session-id> --dir "<workspace>"
+opencode attach http://127.0.0.1:<resolved-port> --session <session-id> --dir "<workspace>"
 ```
 
 7. Agent is created immediately in the office
+
+Notes:
+
+- The backend starts OpenCode on `127.0.0.1`, preferring the default port and incrementing by `+1` when that port is already occupied.
+- The attach command, HTTP API calls, restore flow, and SSE subscription all use the same resolved port for the current VS Code window.
 
 ---
 

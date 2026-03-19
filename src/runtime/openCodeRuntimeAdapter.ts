@@ -2,6 +2,7 @@ import type * as vscode from 'vscode';
 import {
 	createOpenCodeSession,
 	ensureOpenCodeServer,
+	getCurrentOpenCodeServerPort,
 	getOpenCodeAttachCommand,
 	getOpenCodeSessionChildren,
 	getOpenCodeSessionMessages,
@@ -20,8 +21,12 @@ import type {
 export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 	readonly id = 'opencode';
 
-	async ensureServer(cwd: string, output?: vscode.OutputChannel): Promise<void> {
-		await ensureOpenCodeServer(cwd, output);
+	async ensureServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void> {
+		await ensureOpenCodeServer(cwd, output, preferredPort);
+	}
+
+	getServerPort(): number | null {
+		return getCurrentOpenCodeServerPort();
 	}
 
 	async createSession(title?: string): Promise<RuntimeSession> {

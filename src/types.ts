@@ -5,6 +5,7 @@ export interface AgentState {
 	terminalRef: vscode.Terminal;
 	sessionId?: string;
 	projectDir: string;
+	serverPort?: number;
 	activeToolIds: Set<string>;
 	activeToolStatuses: Map<string, string>;
 	activeToolNames: Map<string, string>;
@@ -20,4 +21,5 @@ export interface PersistedAgent {
 	terminalName: string;
 	sessionId?: string;
 	projectDir: string;
+	serverPort?: number;
 }

@@ -8,6 +8,7 @@
 
 :root {
   --pixel-bg: #202830;
+  --pixel-scene-bg: var(--vscode-editor-background);
   --pixel-border: #4a4a6a;
   --pixel-border-light: #6a6a8a;
   --pixel-accent: #5a8cff;
@@ -58,6 +59,8 @@ html, body, #root {
   height: 100%;
   overflow: hidden;
   font-family: 'FS Pixel Sans', sans-serif;
+  background: var(--pixel-scene-bg);
+  color: var(--vscode-foreground);
 }
 
 * {

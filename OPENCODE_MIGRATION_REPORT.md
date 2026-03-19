@@ -62,7 +62,7 @@ README 说是 OpenCode fork，但实际代码不是。
 
 实现内容：
 - 检查 OpenCode server 是否存活
-- 自动启动 `opencode serve --hostname 127.0.0.1 --port 4096`
+- 自动启动 `opencode serve --hostname 127.0.0.1 --port <resolved-port>`
 - 调用 OpenCode HTTP API
 - 创建新 session
 - 获取 session status
@@ -78,7 +78,7 @@ README 说是 OpenCode fork，但实际代码不是。
   1. 确保 OpenCode server 存在
   2. 创建 OpenCode session
   3. 新建 VS Code terminal
-  4. 在 terminal 里执行 `opencode attach http://127.0.0.1:4096 --session <id>`
+  4. 在 terminal 里执行 `opencode attach http://127.0.0.1:<resolved-port> --session <id>`
 
 这一步意味着项目已经从“Claude transcript 驱动”变成了“OpenCode session 驱动”。
 
@@ -393,15 +393,17 @@ npm run build
 2. 如果不可用，自动启动：
 
 ```bash
-opencode serve --hostname 127.0.0.1 --port 4096
+opencode serve --hostname 127.0.0.1 --port <resolved-port>
 ```
+
+其中 `<resolved-port>` 表示当前 VS Code 窗口选中的本地端口：优先使用默认端口，若被占用则依次尝试 `+1`。
 
 3. 创建一个新的 OpenCode session
 4. 打开一个 VS Code terminal
 5. 在终端中执行类似命令：
 
 ```bash
-opencode attach http://127.0.0.1:4096 --session <session-id> --dir "<workspace>"
+opencode attach http://127.0.0.1:<resolved-port> --session <session-id> --dir "<workspace>"
 ```
 
 然后该 session 会在办公室中显示成一个角色。
@@ -508,11 +510,11 @@ opencode --version
 插件默认尝试启动：
 
 ```bash
-opencode serve --hostname 127.0.0.1 --port 4096
+opencode serve --hostname 127.0.0.1 --port <resolved-port>
 ```
 
 请确认：
-- 本机未占用 4096 端口
+- 默认端口及其后续递增端口中，至少有一个本地端口可用
 - `opencode` 可执行
 - PATH 配置正确
 

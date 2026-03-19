@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as net from 'net';
 
 export interface OpenCodeEventPayload {
 	type: string;
@@ -56,46 +57,146 @@ export interface OpenCodeMessageWithParts {
 
 const OPENCODE_SERVER_HOST = '127.0.0.1';
 const OPENCODE_SERVER_PORT = 18083;
-const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
+const OPENCODE_SERVER_PORT_SCAN_LIMIT = 100;
 const SERVER_RETRY_COUNT = 60;
 const SERVER_RETRY_DELAY_MS = 500;
 const SSE_RECONNECT_DELAY_MS = 1500;
-const OPENCODE_SERVER_TERMINAL_NAME = 'OpenCode Server';
+const OPENCODE_SERVER_TERMINAL_NAME_PREFIX = 'OpenCode Server';
 
 let serverStartingPromise: Promise<void> | null = null;
 let serverTerminal: vscode.Terminal | null = null;
+let resolvedServerPort: number | null = null;
 
 function getOpenCodeExecutable(): string {
 	return process.platform === 'win32' ? 'opencode.cmd' : 'opencode';
 }
 
-function getOpenCodeServerCommand(): string {
-	return `${getOpenCodeExecutable()} --hostname ${OPENCODE_SERVER_HOST} --port ${OPENCODE_SERVER_PORT}`;
+function getServerTerminalName(port: number): string {
+	return `${OPENCODE_SERVER_TERMINAL_NAME_PREFIX} (${port})`;
 }
 
-function ensureOpenCodeServerTerminal(cwd: string, output?: vscode.OutputChannel): vscode.Terminal {
+function parseServerTerminalPort(name: string): number | null {
+	const match = name.match(/^OpenCode Server \((\d+)\)$/);
+	if (!match) {
+		return null;
+	}
+	const port = Number.parseInt(match[1], 10);
+	return Number.isFinite(port) ? port : null;
+}
+
+function getResolvedServerPort(): number {
+	return resolvedServerPort ?? OPENCODE_SERVER_PORT;
+}
+
+function getServerUrl(port = getResolvedServerPort()): string {
+	return `http://${OPENCODE_SERVER_HOST}:${port}`;
+}
+
+function getOpenCodeServerCommand(port: number): string {
+	return `${getOpenCodeExecutable()} --hostname ${OPENCODE_SERVER_HOST} --port ${port}`;
+}
+
+function ensureOpenCodeServerTerminal(cwd: string, port: number, output?: vscode.OutputChannel): vscode.Terminal {
 	if (serverTerminal) {
 		return serverTerminal;
 	}
 
-	const existing = vscode.window.terminals.find((terminal) => terminal.name === OPENCODE_SERVER_TERMINAL_NAME);
+	const existing = vscode.window.terminals.find((terminal) => terminal.name === getServerTerminalName(port));
 	if (existing) {
 		serverTerminal = existing;
 		return existing;
 	}
 
 	const terminal = vscode.window.createTerminal({
-		name: OPENCODE_SERVER_TERMINAL_NAME,
+		name: getServerTerminalName(port),
 		cwd,
 		hideFromUser: false,
 	});
 	serverTerminal = terminal;
-	output?.appendLine(`[Open Pixel Agents] Created VS Code terminal "${OPENCODE_SERVER_TERMINAL_NAME}" for OpenCode server startup`);
+	output?.appendLine(`[Open Pixel Agents] Created VS Code terminal "${getServerTerminalName(port)}" for OpenCode server startup`);
 	return terminal;
 }
 
-function getServerUrl(): string {
-	return OPENCODE_SERVER_URL;
+async function isPortAvailable(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const server = net.createServer();
+		const cleanup = () => {
+			server.removeAllListeners();
+		};
+		server.once('error', () => {
+			cleanup();
+			resolve(false);
+		});
+		server.once('listening', () => {
+			server.close(() => {
+				cleanup();
+				resolve(true);
+			});
+		});
+		server.listen(port, OPENCODE_SERVER_HOST);
+	});
+}
+
+async function isOpenCodeServerHealthyAt(port: number): Promise<boolean> {
+	try {
+		const response = await fetch(`${getServerUrl(port)}/global/health`);
+		return response.ok;
+	} catch {
+		return false;
+	}
+}
+
+async function resolveOpenCodeServerPort(output?: vscode.OutputChannel): Promise<number> {
+	if (resolvedServerPort !== null) {
+		return resolvedServerPort;
+	}
+
+	for (const terminal of vscode.window.terminals) {
+		const port = parseServerTerminalPort(terminal.name);
+		if (port === null) {
+			continue;
+		}
+		if (await isOpenCodeServerHealthyAt(port) || await isPortAvailable(port)) {
+			resolvedServerPort = port;
+			serverTerminal = terminal;
+			output?.appendLine(`[Open Pixel Agents] Reusing OpenCode server port ${port} from existing terminal "${terminal.name}"`);
+			return port;
+		}
+	}
+
+	for (let offset = 0; offset < OPENCODE_SERVER_PORT_SCAN_LIMIT; offset += 1) {
+		const port = OPENCODE_SERVER_PORT + offset;
+		if (await isPortAvailable(port)) {
+			resolvedServerPort = port;
+			if (port !== OPENCODE_SERVER_PORT) {
+				output?.appendLine(`[Open Pixel Agents] OpenCode default port ${OPENCODE_SERVER_PORT} is occupied, using ${port}`);
+			}
+			return port;
+		}
+	}
+
+	throw new Error(`Failed to find an available OpenCode server port starting at ${OPENCODE_SERVER_PORT}`);
+}
+
+async function resolveOpenCodeServerPortWithPreference(preferredPort: number | undefined, output?: vscode.OutputChannel): Promise<number> {
+	if (resolvedServerPort !== null) {
+		return resolvedServerPort;
+	}
+
+	if (preferredPort !== undefined) {
+		if (await isOpenCodeServerHealthyAt(preferredPort) || await isPortAvailable(preferredPort)) {
+			resolvedServerPort = preferredPort;
+			const existing = vscode.window.terminals.find((terminal) => terminal.name === getServerTerminalName(preferredPort));
+			if (existing) {
+				serverTerminal = existing;
+			}
+			output?.appendLine(`[Open Pixel Agents] Using preferred OpenCode server port ${preferredPort}`);
+			return preferredPort;
+		}
+		output?.appendLine(`[Open Pixel Agents] Preferred OpenCode server port ${preferredPort} is unavailable, scanning for another port`);
+	}
+
+	return resolveOpenCodeServerPort(output);
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -134,15 +235,15 @@ async function fetchJson<T>(pathname: string, init?: RequestInit): Promise<T> {
 }
 
 export async function isOpenCodeServerHealthy(): Promise<boolean> {
-	try {
-		const response = await fetch(`${getServerUrl()}/global/health`);
-		return response.ok;
-	} catch {
-		return false;
-	}
+	return isOpenCodeServerHealthyAt(getResolvedServerPort());
 }
 
-export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputChannel): Promise<void> {
+export function getCurrentOpenCodeServerPort(): number | null {
+	return resolvedServerPort;
+}
+
+export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void> {
+	const port = await resolveOpenCodeServerPortWithPreference(preferredPort, output);
 	if (await isOpenCodeServerHealthy()) {
 		return;
 	}
@@ -150,11 +251,11 @@ export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputCh
 		return serverStartingPromise;
 	}
 	serverStartingPromise = (async () => {
-		output?.appendLine(`[Open Pixel Agents] Starting OpenCode server at ${getServerUrl()}`);
+		output?.appendLine(`[Open Pixel Agents] Starting OpenCode server at ${getServerUrl(port)}`);
 		try {
-			const terminal = ensureOpenCodeServerTerminal(cwd, output);
+			const terminal = ensureOpenCodeServerTerminal(cwd, port, output);
 			terminal.show(false);
-			terminal.sendText(getOpenCodeServerCommand(), true);
+			terminal.sendText(getOpenCodeServerCommand(port), true);
 		} catch (error) {
 			output?.appendLine(`[Open Pixel Agents] Failed to launch OpenCode server terminal command: ${String(error)}`);
 			serverStartingPromise = null;
@@ -176,10 +277,15 @@ export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputCh
 	return serverStartingPromise;
 }
 
-export function resetOpenCodeServerTerminal(closedTerminal: vscode.Terminal): void {
+
+export function resetOpenCodeServerTerminal(closedTerminal: vscode.Terminal): { wasServerTerminal: boolean; port: number | null } {
 	if (serverTerminal === closedTerminal) {
+		const port = resolvedServerPort;
 		serverTerminal = null;
+		resolvedServerPort = null;
+		return { wasServerTerminal: true, port };
 	}
+	return { wasServerTerminal: false, port: null };
 }
 
 export async function createOpenCodeSession(title?: string): Promise<OpenCodeSession> {
