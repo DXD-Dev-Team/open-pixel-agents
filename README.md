@@ -131,6 +131,15 @@ npx @vscode/vsce package
 - **Shawn Fang**
 - 仓库地址：https://github.com/inkbottle/open-pixel-agents.git
 
+## 赞助
+
+如果这个扩展对你有帮助，请我喝杯咖啡吧
+
+<p align="center">
+  <img src="https://inkbottle.github.io/images/payee_code/alipay_fc.jpg" alt="支付宝" width="180" />
+  <img src="https://inkbottle.github.io/images/payee_code/wepay_fc.jpg" alt="微信" width="180" />
+</p>
+
 ## License
 
 本项目基于 [MIT License](LICENSE) 开源。

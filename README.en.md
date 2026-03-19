@@ -131,6 +131,16 @@ npx @vscode/vsce package
 - **Shawn Fang**
 - Repository: https://github.com/inkbottle/open-pixel-agents.git
 
+## Buy Me a Coffee
+
+If this extension has been helpful to you, a coffee would be greatly appreciated
+
+<p align="center">
+  <img src="https://inkbottle.github.io/images/payee_code/alipay_fc.jpg" alt="Alipay" width="180" />
+  <img src="https://inkbottle.github.io/images/payee_code/wepay_fc.jpg" alt="WePay" width="180" />
+</p>
+
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
