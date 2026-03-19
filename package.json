@@ -2,7 +2,7 @@
   "name": "open-pixel-agents",
   "displayName": "Open Pixel Agents",
   "description": "在像素风办公室中将 OpenCode agents 可视化为动态角色的 VS Code 扩展",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "inkbottle",
   "repository": {
     "type": "git",
