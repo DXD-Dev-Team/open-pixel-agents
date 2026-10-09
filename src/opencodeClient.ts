@@ -67,8 +67,18 @@ let serverStartingPromise: Promise<void> | null = null;
 let serverTerminal: vscode.Terminal | null = null;
 let resolvedServerPort: number | null = null;
 
-function getOpenCodeExecutable(): string {
+export function getOpenCodeExecutable(): string {
 	return process.platform === 'win32' ? 'opencode.cmd' : 'opencode';
+}
+
+function authenticatedHeaders(initial?: RequestInit['headers']): Headers {
+	const headers = new Headers(initial);
+	const password = process.env.OPENCODE_SERVER_PASSWORD;
+	if (password) {
+		const username = process.env.OPENCODE_SERVER_USERNAME || 'opencode';
+		headers.set('authorization', `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`);
+	}
+	return headers;
 }
 
 function getServerTerminalName(port: number): string {
@@ -93,7 +103,7 @@ function getServerUrl(port = getResolvedServerPort()): string {
 }
 
 function getOpenCodeServerCommand(port: number): string {
-	return `${getOpenCodeExecutable()} --hostname ${OPENCODE_SERVER_HOST} --port ${port}`;
+	return `${getOpenCodeExecutable()} serve --hostname ${OPENCODE_SERVER_HOST} --port ${port}`;
 }
 
 function findServerTerminalByPort(port: number): vscode.Terminal | undefined {
@@ -143,7 +153,10 @@ async function isPortAvailable(port: number): Promise<boolean> {
 
 async function isOpenCodeServerHealthyAt(port: number): Promise<boolean> {
 	try {
-		const response = await fetch(`${getServerUrl(port)}/global/health`);
+		const response = await fetch(`${getServerUrl(port)}/global/health`, {
+			headers: authenticatedHeaders(),
+			signal: AbortSignal.timeout(3000),
+		});
 		return response.ok;
 	} catch {
 		return false;
@@ -250,12 +263,11 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function fetchJson<T>(pathname: string, init?: RequestInit): Promise<T> {
+	const headers = authenticatedHeaders(init?.headers);
+	headers.set('content-type', 'application/json');
 	const response = await fetch(`${getServerUrl()}${pathname}`, {
 		...init,
-		headers: {
-			'content-type': 'application/json',
-			...(init?.headers || {}),
-		},
+		headers,
 	});
 	if (!response.ok) {
 		throw new Error(`OpenCode request failed: ${response.status} ${response.statusText}`);
@@ -264,7 +276,10 @@ async function fetchJson<T>(pathname: string, init?: RequestInit): Promise<T> {
 }
 
 async function fetchVoid(pathname: string, init?: RequestInit): Promise<void> {
-	const response = await fetch(`${getServerUrl()}${pathname}`, init);
+	const response = await fetch(`${getServerUrl()}${pathname}`, {
+		...init,
+		headers: authenticatedHeaders(init?.headers),
+	});
 	if (!response.ok) {
 		throw new Error(`OpenCode request failed: ${response.status} ${response.statusText}`);
 	}
@@ -353,8 +368,11 @@ export async function getOpenCodeSessionChildren(sessionId: string): Promise<Ope
 
 export function getOpenCodeAttachCommand(sessionId: string, cwd?: string): string {
 	const url = getServerUrl();
-	const dirPart = cwd ? ` --dir "${cwd.replace(/"/g, '\\"')}"` : '';
-	return `opencode attach ${url} --session ${sessionId}${dirPart}`;
+	const quote = (value: string): string => process.platform === 'win32'
+		? `"${value.replace(/"/g, '\\"')}"`
+		: `'${value.replace(/'/g, "'\\''")}'`;
+	const dirPart = cwd ? ` --dir ${quote(cwd)}` : '';
+	return `${getOpenCodeExecutable()} attach ${url} --session ${quote(sessionId)}${dirPart}`;
 }
 
 export function subscribeToOpenCodeEvents(
@@ -369,7 +387,7 @@ export function subscribeToOpenCodeEvents(
 			try {
 				const response = await fetch(`${getServerUrl()}/global/event`, {
 					signal: controller.signal,
-					headers: { accept: 'text/event-stream' },
+					headers: authenticatedHeaders({ accept: 'text/event-stream' }),
 				});
 				if (!response.ok || !response.body) {
 					throw new Error(`OpenCode SSE failed: ${response.status} ${response.statusText}`);

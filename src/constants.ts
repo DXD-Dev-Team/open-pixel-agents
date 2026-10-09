@@ -1,6 +1,7 @@
 // ── Timing (ms) ──────────────────────────────────────────────
 export const TOOL_DONE_DELAY_MS = 300;
 export const PERMISSION_TIMER_DELAY_MS = 7000;
+export const OFFICE_BRIDGE_READY_TIMEOUT_MS = 45_000;
 
 // ── Display Truncation ──────────────────────────────────────
 export const BASH_COMMAND_DISPLAY_MAX_LENGTH = 30;

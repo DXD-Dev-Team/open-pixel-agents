@@ -1,0 +1,104 @@
+import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import * as vscode from 'vscode';
+import { getOpenCodeExecutable } from './opencodeClient.js';
+
+export interface OfficeAgentInput {
+	displayName: string;
+	cwd?: string;
+}
+
+export interface OfficeServerConnection {
+	port: number;
+	url: string;
+}
+
+export interface OfficeAgentBinding extends OfficeServerConnection {
+	agentId: number;
+	sessionId: string;
+	displayName: string;
+	cwd: string;
+	readOnly: true;
+}
+
+export interface OfficeBridgeApi {
+	readonly version: 1;
+	getServer(): Promise<OfficeServerConnection>;
+	createAgent(input: OfficeAgentInput): Promise<OfficeAgentBinding>;
+	listAgents(): Promise<OfficeAgentBinding[]>;
+	focusAgent(agentId: number): Promise<void>;
+	closeAgent(agentId: number): Promise<void>;
+}
+
+/**
+ * macOS script allocates the actual TTY required by `opencode attach`. The VS
+ * Code terminal only receives its output: input is deliberately never written
+ * to the child, including Terminal.sendText calls from another extension.
+ */
+export function createReadOnlyAttachTerminal(name: string, sessionId: string, cwd: string, port: number): vscode.Terminal {
+	if (process.platform !== 'darwin') {
+		throw new Error('Open Pixel Agents: The read-only attach spike currently requires macOS.');
+	}
+	const writes = new vscode.EventEmitter<string>();
+	let child: ChildProcess | undefined;
+	let closed = false;
+	const pty: vscode.Pseudoterminal = {
+		onDidWrite: writes.event,
+		open(dimensions) {
+			if (closed || child) {
+				return;
+			}
+			writes.fire('Read-only OpenCode session. Send prompts through Office Desk.\r\n');
+			const executable = getOpenCodeExecutable();
+			child = spawn('/usr/bin/script', [
+				'-q', '/dev/null', executable, 'attach', `http://127.0.0.1:${port}`,
+				'--session', sessionId, '--dir', cwd,
+			], {
+				cwd,
+				detached: true,
+				stdio: ['pipe', 'pipe', 'pipe'],
+				env: {
+					...process.env,
+					TERM: 'xterm-256color',
+					COLUMNS: String(dimensions?.columns ?? 120),
+					LINES: String(dimensions?.rows ?? 30),
+				},
+			});
+			child.stdout?.on('data', (data: Buffer) => {
+				if (!closed) {
+					writes.fire(data.toString('utf8'));
+				}
+			});
+			child.stderr?.on('data', (data: Buffer) => {
+				if (!closed) {
+					writes.fire(data.toString('utf8'));
+				}
+			});
+			child.on('error', () => {
+				if (!closed) {
+					writes.fire('\r\nUnable to launch the read-only OpenCode attachment.\r\n');
+				}
+			});
+			child.on('exit', () => {
+				if (!closed) {
+					writes.fire('\r\nOpenCode attachment ended. The office session is still registered.\r\n');
+				}
+			});
+		},
+		handleInput() {
+			// Never forward keyboard, pasted input, or Terminal.sendText to OpenCode.
+		},
+		close() {
+			closed = true;
+			if (child?.pid && child.exitCode === null && child.signalCode === null) {
+				try {
+					process.kill(-child.pid, 'SIGTERM');
+				} catch {
+					child.kill();
+				}
+			}
+			writes.dispose();
+		},
+	};
+	return vscode.window.createTerminal({ name, pty, isTransient: true });
+}

@@ -6,6 +6,8 @@ export interface AgentState {
 	sessionId?: string;
 	projectDir: string;
 	serverPort?: number;
+	displayName?: string;
+	readOnly?: boolean;
 	activeToolIds: Set<string>;
 	activeToolStatuses: Map<string, string>;
 	activeToolNames: Map<string, string>;
@@ -22,4 +24,6 @@ export interface PersistedAgent {
 	sessionId?: string;
 	projectDir: string;
 	serverPort?: number;
+	displayName?: string;
+	readOnly?: boolean;
 }
