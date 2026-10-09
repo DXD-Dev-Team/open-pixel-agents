@@ -72,6 +72,7 @@ export function createCharacter(
     seatId,
     bubbleType: null,
     bubbleTimer: 0,
+    officeLabel: { name: `Agent ${id}`, status: 'idle', needsInput: false },
     seatTimer: 0,
     isSubagent: false,
     parentAgentId: null,
@@ -95,6 +96,11 @@ export function updateCharacter(
 
   switch (ch.state) {
     case CharacterState.TYPE: {
+      if (ch.officeLabel.managed && !ch.exiting && !ch.isActive) {
+        ch.frame = 0
+        ch.frameTimer = 0
+        break
+      }
       if (ch.frameTimer >= TYPE_FRAME_DURATION_SEC) {
         ch.frameTimer -= TYPE_FRAME_DURATION_SEC
         ch.frame = (ch.frame + 1) % 2
@@ -121,7 +127,7 @@ export function updateCharacter(
       ch.frame = 0
       if (ch.seatTimer < 0) ch.seatTimer = 0 // clear turn-end sentinel
       // If became active, pathfind to seat
-      if (ch.isActive) {
+      if (ch.isActive || ch.officeLabel.managed && !ch.exiting) {
         if (!ch.seatId) {
           // No seat assigned — type in place
           ch.state = CharacterState.TYPE
@@ -196,7 +202,7 @@ export function updateCharacter(
         ch.x = center.x
         ch.y = center.y
 
-        if (ch.isActive) {
+        if (ch.isActive || ch.officeLabel.managed && !ch.exiting) {
           if (!ch.seatId) {
             // No seat — type in place
             ch.state = CharacterState.TYPE
@@ -261,7 +267,7 @@ export function updateCharacter(
       }
 
       // If became active while wandering, repath to seat
-      if (ch.isActive && ch.seatId) {
+      if ((ch.isActive || ch.officeLabel.managed && !ch.exiting) && ch.seatId) {
         const seat = seats.get(ch.seatId)
         if (seat) {
           const lastStep = ch.path[ch.path.length - 1]

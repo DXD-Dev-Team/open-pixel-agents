@@ -1,12 +1,12 @@
 {
-  "name": "open-pixel-agents",
-  "displayName": "Open Pixel Agents",
-  "description": "在像素风办公室中将 OpenCode agents 可视化为动态角色的 VS Code 扩展",
+  "name": "office-pixel-agents",
+  "displayName": "The Office \u2014 Pixel Agents",
+  "description": "Local pixel office for OpenCode workers, with the Office Desk integration bridge.",
   "version": "0.0.2",
-  "publisher": "inkbottle",
+  "publisher": "dxd-dev-team",
   "repository": {
     "type": "git",
-    "url": "https://github.com/inkbottle/open-pixel-agents"
+    "url": "https://github.com/DXD-Dev-Team/open-pixel-agents"
   },
   "icon": "icon.png",
   "license": "MIT",
@@ -21,29 +21,29 @@
   "contributes": {
     "commands": [
       {
-        "command": "open-pixel-agents.showPanel",
+        "command": "office-pixel-agents.showPanel",
         "title": "Open Pixel Agents: Show Panel"
       },
       {
-        "command": "open-pixel-agents.exportDefaultLayout",
+        "command": "office-pixel-agents.exportDefaultLayout",
         "title": "Open Pixel Agents: Export Layout as Default"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
-          "id": "open-pixel-agents-panel",
-          "title": "Open Pixel Agents",
+          "id": "office-pixel-agents-panel",
+          "title": "The Office",
           "icon": "$(window)"
         }
       ]
     },
     "views": {
-      "open-pixel-agents-panel": [
+      "office-pixel-agents-panel": [
         {
           "type": "webview",
-          "id": "open-pixel-agents.panelView",
-          "name": "Open Pixel Agents"
+          "id": "office-pixel-agents.panelView",
+          "name": "The Office"
         }
       ]
     }

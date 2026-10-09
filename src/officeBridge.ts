@@ -1,11 +1,57 @@
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import * as vscode from 'vscode';
-import { getOpenCodeExecutable } from './opencodeClient.js';
+import { getOpenCodeExecutable, getOpenCodeEnvironment } from './opencodeClient.js';
+import type { RuntimeGlobalEvent } from './runtime/runtimeAdapter.js';
+
+export type OfficeStatus = 'needs input' | 'failed' | 'working' | 'reading' | 'waiting' | 'done' | 'idle';
+export type OfficeProviderKind = 'claude' | 'codex' | 'grok';
+
+export interface OfficePricing {
+	providerId: string;
+	modelId: string;
+	input: number;
+	output: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+}
+
+/** Account ids and catalog prices only. Credentials never belong here. */
+export interface OfficeWorkerMetadata {
+	workerId?: string;
+	name?: string;
+	providerKind?: OfficeProviderKind;
+	providerId?: string;
+	modelId?: string;
+	accountId?: string;
+	status?: OfficeStatus;
+	needsInput?: boolean;
+	usageTokens?: number;
+	estimatedCost?: number;
+	pricing?: OfficePricing;
+}
+
+export interface OfficeSpeech {
+	text: string;
+	expiresAt: number;
+	source: 'assistant' | 'task';
+}
+
+export interface OfficeLabel {
+	name: string;
+	status: OfficeStatus;
+	providerKind?: OfficeProviderKind;
+	usageTokens?: number;
+	estimatedCost?: number;
+	needsInput: boolean;
+	managed?: boolean;
+	speech?: OfficeSpeech;
+}
 
 export interface OfficeAgentInput {
 	displayName: string;
 	cwd?: string;
+	metadata?: OfficeWorkerMetadata;
 }
 
 export interface OfficeServerConnection {
@@ -19,15 +65,31 @@ export interface OfficeAgentBinding extends OfficeServerConnection {
 	displayName: string;
 	cwd: string;
 	readOnly: true;
+	metadata?: OfficeWorkerMetadata;
+}
+
+export type OfficeBridgeEvent =
+	| { type: 'runtime'; agentId: number; sessionId: string; event: RuntimeGlobalEvent }
+	| { type: 'changed'; agentId: number; binding: OfficeAgentBinding }
+	| { type: 'closed'; agentId: number; sessionId: string };
+
+export interface OfficeVisualSnapshot {
+	characters: Array<{ id: number; isSubagent: boolean; label?: OfficeLabel; seatId?: string | null; atSeat?: boolean; computerDesk?: boolean }>;
+	png: string;
 }
 
 export interface OfficeBridgeApi {
 	readonly version: 1;
+	configureRuntime(options: { executable: string; env: Record<string, string> }): void;
+	shutdownRuntime(): Promise<void>;
 	getServer(): Promise<OfficeServerConnection>;
 	createAgent(input: OfficeAgentInput): Promise<OfficeAgentBinding>;
 	listAgents(): Promise<OfficeAgentBinding[]>;
 	focusAgent(agentId: number): Promise<void>;
 	closeAgent(agentId: number): Promise<void>;
+	setMetadata(agentId: number, metadata: OfficeWorkerMetadata): Promise<OfficeAgentBinding>;
+	readonly onDidEvent: vscode.Event<OfficeBridgeEvent>;
+	getVisualSnapshot(): Promise<OfficeVisualSnapshot>;
 }
 
 /**
@@ -58,7 +120,7 @@ export function createReadOnlyAttachTerminal(name: string, sessionId: string, cw
 				detached: true,
 				stdio: ['pipe', 'pipe', 'pipe'],
 				env: {
-					...process.env,
+					...getOpenCodeEnvironment(),
 					TERM: 'xterm-256color',
 					COLUMNS: String(dimensions?.columns ?? 120),
 					LINES: String(dimensions?.rows ?? 30),

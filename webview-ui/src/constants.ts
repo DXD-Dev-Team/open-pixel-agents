@@ -2,8 +2,8 @@ import type { FloorColor } from './office/types.js'
 
 // ── Grid & Layout ────────────────────────────────────────────
 export const TILE_SIZE = 16
-export const DEFAULT_COLS = 20
-export const DEFAULT_ROWS = 11
+export const DEFAULT_COLS = 32
+export const DEFAULT_ROWS = 34
 export const MAX_COLS = 64
 export const MAX_ROWS = 64
 
@@ -49,6 +49,16 @@ export const BUTTON_LINE_WIDTH_ZOOM_FACTOR = 0.5
 export const BUBBLE_FADE_DURATION_SEC = 0.5
 export const BUBBLE_SITTING_OFFSET_PX = 10
 export const BUBBLE_VERTICAL_OFFSET_PX = 24
+export const OFFICE_LABEL_FONT_PX = 7
+export const OFFICE_LABEL_LINE_HEIGHT_PX = 10
+export const OFFICE_LABEL_PADDING_PX = 4
+export const OFFICE_LABEL_MAX_NAME_WIDTH_PX = 110
+export const OFFICE_LABEL_MANAGED_VERTICAL_OFFSET_PX = 56
+export const OFFICE_SPEECH_MAX_WIDTH_PX = 156
+export const OFFICE_SPEECH_MAX_LINES = 2
+export const OFFICE_SPEECH_LABEL_GAP_PX = 5
+export const OFFICE_CANVAS_FLUSH_EVENT = 'officeCanvasFlush'
+export const OFFICE_SNAPSHOT_FRAME_FALLBACK_MS = 250
 export const FALLBACK_FLOOR_COLOR = '#808080'
 
 // ── Rendering - Overlay Colors (canvas, not CSS) ─────────────

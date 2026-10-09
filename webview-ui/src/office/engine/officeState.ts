@@ -14,7 +14,7 @@ import {
   CHARACTER_HIT_HALF_WIDTH,
   CHARACTER_HIT_HEIGHT,
 } from '../../constants.js'
-import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture } from '../types.js'
+import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture, OfficeLabel } from '../types.js'
 import { createCharacter, updateCharacter } from './characters.js'
 import { matrixEffectSeeds } from './matrixEffect.js'
 import { isWalkable, getWalkableTiles, findPath } from '../layout/tileMap.js'
@@ -44,6 +44,7 @@ export class OfficeState {
   /** Reverse lookup: sub-agent character ID → parent info */
   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string; sessionId?: string }> = new Map()
   private nextSubagentId = -1
+  private readonly deskReservations = new Map<number, string>()
 
   constructor(layout?: OfficeLayout) {
     this.layout = layout || createDefaultLayout()
@@ -84,7 +85,7 @@ export class OfficeState {
 
     // First pass: try to keep characters at their existing seats
     for (const ch of this.characters.values()) {
-      if (ch.seatId && this.seats.has(ch.seatId)) {
+      if (ch.seatId && this.seats.has(ch.seatId) && (!ch.officeLabel.managed || this.seats.get(ch.seatId)?.computerDeskId)) {
         const seat = this.seats.get(ch.seatId)!
         if (!seat.assigned) {
           seat.assigned = true
@@ -105,7 +106,7 @@ export class OfficeState {
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue
-      const seatId = this.findFreeSeat()
+      const seatId = this.findFreeSeat(ch.officeLabel.managed)
       if (seatId) {
         this.seats.get(seatId)!.assigned = true
         ch.seatId = seatId
@@ -160,11 +161,36 @@ export class OfficeState {
     return result
   }
 
-  private findFreeSeat(): string | null {
+  availableComputerDesks(): number {
+    const occupied = new Set([...this.seats.values()].filter(seat => seat.assigned && seat.computerDeskId).map(seat => seat.computerDeskId))
+    return new Set([...this.seats.values()].filter(seat => !seat.assigned && seat.computerDeskId && !occupied.has(seat.computerDeskId)).map(seat => seat.computerDeskId)).size
+  }
+
+  reserveComputerDesk(requestId: number): string | null {
+    const seatId = this.findFreeSeat(true)
+    if (seatId) {
+      this.seats.get(seatId)!.assigned = true
+      this.deskReservations.set(requestId, seatId)
+    }
+    return seatId
+  }
+
+  releaseComputerDesk(requestId: number): void {
+    const seatId = this.deskReservations.get(requestId)
+    if (seatId) {
+      const seat = this.seats.get(seatId)
+      if (seat) seat.assigned = false
+      this.deskReservations.delete(requestId)
+    }
+  }
+
+  private findFreeSeat(computerOnly = false): string | null {
     const freeWorkSeats: string[] = []
     const freeOtherSeats: string[] = []
+    const occupied = new Set([...this.seats.values()].filter(seat => seat.assigned && seat.computerDeskId).map(seat => seat.computerDeskId))
     for (const [uid, seat] of this.seats) {
       if (seat.assigned) continue
+      if (computerOnly && (!seat.computerDeskId || occupied.has(seat.computerDeskId))) continue
       if (seat.isWorkSeat) freeWorkSeats.push(uid)
       else freeOtherSeats.push(uid)
     }
@@ -236,6 +262,7 @@ export class OfficeState {
       ch.matrixEffectSeeds = matrixEffectSeeds()
     }
     ch.exiting = true
+    ch.isActive = false
   }
 
   /**
@@ -265,8 +292,12 @@ export class OfficeState {
     return { palette, hueShift }
   }
 
-  addAgent(id: number, preferredPalette?: number, preferredHueShift?: number, preferredSeatId?: string, skipSpawnEffect?: boolean): void {
+  addAgent(id: number, preferredPalette?: number, preferredHueShift?: number, preferredSeatId?: string, skipSpawnEffect?: boolean, managed = false, reservationId?: number): void {
     if (this.characters.has(id)) return
+    if (reservationId !== undefined) {
+      preferredSeatId = this.deskReservations.get(reservationId) ?? preferredSeatId
+      this.releaseComputerDesk(reservationId)
+    }
 
     let palette: number
     let hueShift: number
@@ -283,12 +314,12 @@ export class OfficeState {
     let seatId: string | null = null
     if (preferredSeatId && this.seats.has(preferredSeatId)) {
       const seat = this.seats.get(preferredSeatId)!
-      if (!seat.assigned) {
+      if (!seat.assigned && (!managed || !!seat.computerDeskId)) {
         seatId = preferredSeatId
       }
     }
     if (!seatId) {
-      seatId = this.findFreeSeat()
+      seatId = this.findFreeSeat(managed)
     }
 
     let ch: Character
@@ -308,6 +339,7 @@ export class OfficeState {
       ch.tileRow = spawn.row
     }
 
+    ch.officeLabel.managed = managed
     if (!skipSpawnEffect) {
       const entrance = this.getEntranceTile()
       this.placeCharacterAtTile(ch, entrance.col, entrance.row)
@@ -479,7 +511,7 @@ export class OfficeState {
   }
 
   /** Create a sub-agent character with a parent-derived but distinct appearance. Returns the sub-agent ID. */
-  addSubagent(parentAgentId: number, parentToolId: string): number {
+  addSubagent(parentAgentId: number, parentToolId: string): number | null {
     const key = `${parentAgentId}:${parentToolId}`
     if (this.subagentIdMap.has(key)) return this.subagentIdMap.get(key)!
 
@@ -494,7 +526,8 @@ export class OfficeState {
     const derivedOffset = 45 + (hash % 180)
     const hueShift = (baseHue + derivedOffset) % 360
 
-    const bestSeatId = this.findFreeSeat()
+    const bestSeatId = this.findFreeSeat(parentCh?.officeLabel.managed)
+    if (parentCh?.officeLabel.managed && !bestSeatId) return null
 
     let ch: Character
     if (bestSeatId) {
@@ -514,6 +547,8 @@ export class OfficeState {
     }
     ch.isSubagent = true
     ch.parentAgentId = parentAgentId
+    if (parentCh) ch.officeLabel = { ...parentCh.officeLabel, status: 'working', needsInput: false, speech: undefined,
+      ...(parentCh.officeLabel.providerKind === 'codex' ? { usageTokens: 0, estimatedCost: undefined } : {}) }
 
     const entrance = this.getEntranceTile()
     this.placeCharacterAtTile(ch, entrance.col, entrance.row)
@@ -620,7 +655,7 @@ export class OfficeState {
     const ch = this.characters.get(id)
     if (ch) {
       ch.isActive = active
-      if (!active) {
+      if (!active && !ch.officeLabel.managed) {
         // Sentinel -1: signals turn just ended, skip next seat rest timer.
         // Prevents the WALK handler from setting a 2-4 min rest on arrival.
         ch.seatTimer = -1
@@ -695,6 +730,23 @@ export class OfficeState {
     const ch = this.characters.get(id)
     if (ch) {
       ch.currentTool = tool
+    }
+  }
+
+  setOfficeLabel(id: number, label: OfficeLabel): void {
+    const ch = this.characters.get(id)
+    if (!ch) return
+    ch.officeLabel = { ...label }
+    if (label.managed && !this.seats.get(ch.seatId ?? '')?.computerDeskId) {
+      const previous = this.seats.get(ch.seatId ?? '')
+      if (previous) previous.assigned = false
+      const seatId = this.findFreeSeat(true)
+      ch.seatId = seatId
+      const seat = seatId ? this.seats.get(seatId) : undefined
+      if (seat) {
+        seat.assigned = true
+        if (!this.startWalkingToTile(ch, seat.seatCol, seat.seatRow)) this.placeCharacterAtTile(ch, seat.seatCol, seat.seatRow)
+      }
     }
   }
 

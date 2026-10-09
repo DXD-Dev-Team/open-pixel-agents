@@ -4,6 +4,7 @@ import {
 	deleteOpenCodeSession,
 	ensureOpenCodeServer,
 	getCurrentOpenCodeServerPort,
+	getOpenCodeEnvironment,
 	getOpenCodeAttachCommand,
 	getOpenCodeSession,
 	getOpenCodeSessionChildren,
@@ -83,5 +84,26 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 			messages,
 			children,
 		};
+	}
+
+	async getPendingInputEvents(): Promise<RuntimeGlobalEvent[]> {
+		const port = this.getServerPort();
+		if (port === null) {
+			return [];
+		}
+		const env = getOpenCodeEnvironment();
+		const headers: Record<string, string> = { accept: 'application/json' };
+		if (env.OPENCODE_SERVER_PASSWORD) {
+			headers.authorization = `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME || 'opencode'}:${env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`;
+		}
+		const lists = await Promise.all((['permission', 'question'] as const).map(async (kind) => {
+			const response = await fetch(`http://127.0.0.1:${port}/${kind}`, { headers });
+			if (!response.ok) {
+				throw new Error(`OpenCode pending ${kind} request failed (${response.status}).`);
+			}
+			const records = await response.json() as Record<string, unknown>[];
+			return records.map((properties): RuntimeGlobalEvent => ({ directory: '', payload: { type: `${kind}.asked`, properties } }));
+		}));
+		return lists.flat();
 	}
 }

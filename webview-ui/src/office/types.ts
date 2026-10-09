@@ -65,6 +65,8 @@ export interface Seat {
   facingDir: Direction
   /** Preferred for active work; typically adjacent to a desk */
   isWorkSeat: boolean
+  /** Desk containing a computer, when this chair faces one. */
+  computerDeskId?: string
   assigned: boolean
 }
 
@@ -147,6 +149,19 @@ export interface OfficeLayout {
   tileColors?: Array<FloorColor | null>
 }
 
+export type OfficeStatus = 'needs input' | 'failed' | 'working' | 'reading' | 'waiting' | 'done' | 'idle'
+
+export interface OfficeLabel {
+  name: string
+  status: OfficeStatus
+  providerKind?: 'claude' | 'codex' | 'grok'
+  usageTokens?: number
+  estimatedCost?: number
+  needsInput: boolean
+  managed?: boolean
+  speech?: { text: string; expiresAt: number; source: 'assistant' | 'task' }
+}
+
 export interface Character {
   id: number
   state: CharacterState
@@ -186,6 +201,8 @@ export interface Character {
   bubbleType: 'permission' | 'waiting' | 'done' | null
   /** Countdown timer for bubble (waiting: 2→0, permission: unused) */
   bubbleTimer: number
+  /** The existing bubble is a persistent worker label, including while idle. */
+  officeLabel: OfficeLabel
   /** Timer to stay seated while inactive after seat reassignment (counts down to 0) */
   seatTimer: number
   /** Whether this character represents a sub-agent (spawned by Task tool) */

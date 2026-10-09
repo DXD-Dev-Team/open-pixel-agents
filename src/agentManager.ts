@@ -6,10 +6,14 @@ import { cancelWaitingTimer, cancelPermissionTimer } from './timerManager.js';
 import { WORKSPACE_KEY_AGENTS, WORKSPACE_KEY_AGENT_SEATS } from './constants.js';
 import { migrateAndLoadLayout } from './layoutPersistence.js';
 import { createReadOnlyAttachTerminal } from './officeBridge.js';
+import type { OfficeWorkerMetadata } from './officeBridge.js';
+import { isOfficeDeskManaged } from './opencodeClient.js';
 
 export interface AgentLaunchOptions {
 	displayName?: string;
 	readOnly?: boolean;
+	metadata?: OfficeWorkerMetadata;
+	reservationId?: number;
 }
 
 export function getProjectDirPath(cwd?: string): string | null {
@@ -77,6 +81,9 @@ export async function launchNewTerminal(
 	if (options?.readOnly && process.platform !== 'darwin') {
 		throw new Error('Open Pixel Agents: The read-only attach spike currently requires macOS.');
 	}
+	if (isOfficeDeskManaged() && !options?.readOnly) {
+		throw new Error('Open Pixel Agents: Managed workers must use the Office Desk read-only creation path.');
+	}
 
 	await runtime.ensureServer(cwd, output);
 	const serverPort = runtime.getServerPort() ?? undefined;
@@ -112,13 +119,14 @@ export async function launchNewTerminal(
 	if (options?.readOnly) {
 		agent.readOnly = true;
 		agent.displayName = options.displayName;
+		agent.officeMetadata = options.metadata;
 	}
 
 	agents.set(id, agent);
 	activeAgentIdRef.current = id;
 	persistAgents();
 	console.log(`[Open Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
-	webview?.postMessage({ type: 'agentCreated', id });
+	webview?.postMessage({ type: 'agentCreated', id, ...(options?.readOnly ? { managed: true, reservationId: options.reservationId } : {}) });
 	return agent;
 }
 
@@ -158,7 +166,7 @@ export function persistAgents(
 			sessionId: agent.sessionId,
 			projectDir: agent.projectDir,
 			serverPort: agent.serverPort,
-			...(agent.readOnly ? { readOnly: true, displayName: agent.displayName } : {}),
+			...(agent.readOnly ? { readOnly: true, displayName: agent.displayName, officeMetadata: agent.officeMetadata } : {}),
 		});
 	}
 	return context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
@@ -186,6 +194,10 @@ export async function restoreAgents(
 	let maxIdx = 0;
 
 	for (const p of persisted) {
+		if (isOfficeDeskManaged() && !p.readOnly) {
+			output?.appendLine(`[Open Pixel Agents] Refusing writable legacy agent ${p.id} in Office Desk managed mode.`);
+			continue;
+		}
 		if (!p.sessionId) {
 			output?.appendLine(`[Open Pixel Agents] Skipping persisted agent ${p.id} with no session id`);
 			continue;
@@ -222,6 +234,7 @@ export async function restoreAgents(
 		if (p.readOnly) {
 			agent.readOnly = true;
 			agent.displayName = p.displayName;
+			agent.officeMetadata = p.officeMetadata;
 		}
 
 		agents.set(p.id, agent);

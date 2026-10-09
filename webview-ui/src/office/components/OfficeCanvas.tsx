@@ -686,6 +686,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       }}
     >
       <canvas
+        data-office-canvas
         ref={canvasRef}
         onMouseMove={handleMouseMove}
         onMouseDown={handleMouseDown}

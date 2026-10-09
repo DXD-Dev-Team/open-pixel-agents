@@ -81,4 +81,5 @@ export interface RuntimeAdapter {
 	getSessionMessages(sessionId: string): Promise<RuntimeMessage[]>;
 	getSessionChildren(sessionId: string): Promise<RuntimeSession[]>;
 	getSessionSnapshot(sessionId: string): Promise<RuntimeSessionSnapshot>;
+	getPendingInputEvents?(): Promise<RuntimeGlobalEvent[]>;
 }

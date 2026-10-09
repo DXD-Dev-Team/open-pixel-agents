@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import * as net from 'net';
+import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { OFFICE_BRIDGE_READY_TIMEOUT_MS } from './constants.js';
 
 export interface OpenCodeEventPayload {
 	type: string;
@@ -66,16 +69,59 @@ const OPENCODE_SERVER_TERMINAL_NAME_PREFIX = 'OpenCode Server';
 let serverStartingPromise: Promise<void> | null = null;
 let serverTerminal: vscode.Terminal | null = null;
 let resolvedServerPort: number | null = null;
+let runtimeOptions: { executable: string; env: Record<string, string> } | undefined;
+let managedServerProcess: ChildProcess | undefined;
+let runtimeConfigured: (() => void) | undefined;
+const runtimeConfigurationReady = new Promise<void>(resolve => { runtimeConfigured = resolve; });
+const runtimeLifetime = new AbortController();
+let runtimeShutdownTask: Promise<void> | undefined;
+
+function assertRuntimeRunning(): void {
+	if (runtimeLifetime.signal.aborted) {
+		throw new Error('The office runtime is shutting down. Reload this window to reconnect.');
+	}
+}
+
+export function configureOpenCodeRuntime(options: { executable: string; env: Record<string, string> }): void {
+	assertRuntimeRunning();
+	if (resolvedServerPort !== null || serverStartingPromise) {
+		throw new Error('Reload this window before enabling Office Desk; its runtime must be configured before the office starts.');
+	}
+	if (!options.executable || options.executable.includes('\0')) {
+		throw new Error('An OpenCode executable is required.');
+	}
+	runtimeOptions = { executable: options.executable, env: { ...options.env } };
+	runtimeConfigured?.();
+}
+
+export function getOpenCodeEnvironment(): NodeJS.ProcessEnv {
+	if (!runtimeOptions) {
+		const environment = { ...process.env };
+		delete environment.OFFICE_RUNTIME_TEST_CODEX_URL;
+		delete environment.OFFICE_RUNTIME_TEST_PROVIDER_ORIGIN;
+		return environment;
+	}
+	const base: NodeJS.ProcessEnv = {};
+	for (const name of ['PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TMPDIR']) {
+		if (process.env[name]) { base[name] = process.env[name]; }
+	}
+	return { ...base, ...runtimeOptions.env };
+}
+
+export function isOfficeDeskManaged(): boolean {
+	return runtimeOptions?.env.OFFICE_DESK_MANAGED === '1';
+}
 
 export function getOpenCodeExecutable(): string {
-	return process.platform === 'win32' ? 'opencode.cmd' : 'opencode';
+	return runtimeOptions?.executable ?? (process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
 }
 
 function authenticatedHeaders(initial?: RequestInit['headers']): Headers {
 	const headers = new Headers(initial);
-	const password = process.env.OPENCODE_SERVER_PASSWORD;
+	const environment = getOpenCodeEnvironment();
+	const password = environment.OPENCODE_SERVER_PASSWORD;
 	if (password) {
-		const username = process.env.OPENCODE_SERVER_USERNAME || 'opencode';
+		const username = environment.OPENCODE_SERVER_USERNAME || 'opencode';
 		headers.set('authorization', `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`);
 	}
 	return headers;
@@ -111,6 +157,7 @@ function findServerTerminalByPort(port: number): vscode.Terminal | undefined {
 }
 
 function ensureOpenCodeServerTerminal(cwd: string, port: number, output?: vscode.OutputChannel): vscode.Terminal {
+	assertRuntimeRunning();
 	if (serverTerminal) {
 		return serverTerminal;
 	}
@@ -121,11 +168,36 @@ function ensureOpenCodeServerTerminal(cwd: string, port: number, output?: vscode
 		return existing;
 	}
 
-	const terminal = vscode.window.createTerminal({
-		name: getServerTerminalName(port),
-		cwd,
-		hideFromUser: false,
-	});
+	let terminal: vscode.Terminal;
+	if (runtimeOptions) {
+		const writes = new vscode.EventEmitter<string>();
+		let child: ChildProcess | undefined;
+		let closed = false;
+		terminal = vscode.window.createTerminal({
+			name: getServerTerminalName(port),
+			isTransient: true,
+			pty: {
+				onDidWrite: writes.event,
+				open() {
+					if (closed || child || runtimeLifetime.signal.aborted) { return; }
+					child = spawn(getOpenCodeExecutable(), ['serve', '--hostname', OPENCODE_SERVER_HOST, '--port', String(port)], {
+						cwd, env: getOpenCodeEnvironment(), stdio: ['ignore', 'pipe', 'pipe'],
+					});
+					managedServerProcess = child;
+					// Runtime logs can contain provider errors or asks. Keep this terminal credential-free.
+					child.stdout?.on('data', () => undefined);
+					child.stderr?.on('data', () => undefined);
+					writes.fire(`Office Desk runtime: ${getServerUrl(port)}\r\n`);
+					child.on('error', () => writes.fire('Unable to launch OpenCode. Check its configured executable.\r\n'));
+					child.on('exit', () => { if (!closed) { writes.fire('Office runtime ended. Reload to reconnect.\r\n'); } });
+				},
+				handleInput() {},
+				close() { closed = true; child?.kill(); writes.dispose(); },
+			},
+		});
+	} else {
+		terminal = vscode.window.createTerminal({ name: getServerTerminalName(port), cwd, hideFromUser: false });
+	}
 	serverTerminal = terminal;
 	output?.appendLine(`[Open Pixel Agents] Created VS Code terminal "${getServerTerminalName(port)}" for OpenCode server startup`);
 	return terminal;
@@ -174,6 +246,7 @@ async function resolveOpenCodeServerPort(output?: vscode.OutputChannel): Promise
 			continue;
 		}
 		if (await isOpenCodeServerHealthyAt(port) || await isPortAvailable(port)) {
+			assertRuntimeRunning();
 			resolvedServerPort = port;
 			serverTerminal = terminal;
 			output?.appendLine(`[Open Pixel Agents] Reusing window-local OpenCode server port ${port} from terminal "${terminal.name}"`);
@@ -184,6 +257,7 @@ async function resolveOpenCodeServerPort(output?: vscode.OutputChannel): Promise
 	for (let offset = 0; offset < OPENCODE_SERVER_PORT_SCAN_LIMIT; offset += 1) {
 		const port = OPENCODE_SERVER_PORT + offset;
 		if (await isPortAvailable(port)) {
+			assertRuntimeRunning();
 			resolvedServerPort = port;
 			if (port !== OPENCODE_SERVER_PORT) {
 				output?.appendLine(`[Open Pixel Agents] OpenCode default port ${OPENCODE_SERVER_PORT} is occupied, using ${port}`);
@@ -203,6 +277,7 @@ async function resolveOpenCodeServerPortWithPreference(preferredPort: number | u
 	if (preferredPort !== undefined) {
 		const existingTerminal = findServerTerminalByPort(preferredPort);
 		if (existingTerminal && (await isOpenCodeServerHealthyAt(preferredPort) || await isPortAvailable(preferredPort))) {
+			assertRuntimeRunning();
 			resolvedServerPort = preferredPort;
 			serverTerminal = existingTerminal;
 			output?.appendLine(`[Open Pixel Agents] Using preferred OpenCode server port ${preferredPort}`);
@@ -219,6 +294,7 @@ async function resolveOpenCodeServerPortWithPreference(preferredPort: number | u
 			const terminal = findServerTerminalByPort(port);
 			if (terminal) {
 				if (await isOpenCodeServerHealthyAt(port) || await isPortAvailable(port)) {
+					assertRuntimeRunning();
 					resolvedServerPort = port;
 					serverTerminal = terminal;
 					output?.appendLine(`[Open Pixel Agents] Reusing window-local OpenCode server port ${port} from terminal "${terminal.name}"`);
@@ -227,6 +303,7 @@ async function resolveOpenCodeServerPortWithPreference(preferredPort: number | u
 				continue;
 			}
 			if (await isPortAvailable(port)) {
+				assertRuntimeRunning();
 				resolvedServerPort = port;
 				if (port !== preferredPort) {
 					output?.appendLine(`[Open Pixel Agents] Allocated new OpenCode server port ${port} for this window (preferred ${preferredPort} unavailable)`);
@@ -294,8 +371,21 @@ export function getCurrentOpenCodeServerPort(): number | null {
 }
 
 export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void> {
+	assertRuntimeRunning();
+	// A restored office view can open before its companion finishes activation.
+	// Wait for configuration instead of starting an unisolated server first.
+	if (!runtimeOptions && vscode.extensions?.getExtension('dxd-dev-team.office-desk')) {
+		await Promise.race([
+			runtimeConfigurationReady,
+			delay(OFFICE_BRIDGE_READY_TIMEOUT_MS, runtimeLifetime.signal).then(() => { throw new Error('Office Desk did not configure its runtime. Open Office Desk to inspect the connection error.'); }),
+		]);
+	}
+	assertRuntimeRunning();
 	const port = await resolveOpenCodeServerPortWithPreference(preferredPort, output);
-	if (await isOpenCodeServerHealthy()) {
+	assertRuntimeRunning();
+	const healthy = await isOpenCodeServerHealthy();
+	assertRuntimeRunning();
+	if (healthy) {
 		return;
 	}
 	if (serverStartingPromise) {
@@ -306,7 +396,7 @@ export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputCh
 		try {
 			const terminal = ensureOpenCodeServerTerminal(cwd, port, output);
 			terminal.show(false);
-			terminal.sendText(getOpenCodeServerCommand(port), true);
+			if (!runtimeOptions) { terminal.sendText(getOpenCodeServerCommand(port), true); }
 		} catch (error) {
 			output?.appendLine(`[Open Pixel Agents] Failed to launch OpenCode server terminal command: ${String(error)}`);
 			serverStartingPromise = null;
@@ -315,17 +405,44 @@ export async function ensureOpenCodeServer(cwd: string, output?: vscode.OutputCh
 
 		output?.appendLine(`[Open Pixel Agents] Waiting for OpenCode server readiness (timeout ${Math.round((SERVER_RETRY_COUNT * SERVER_RETRY_DELAY_MS) / 1000)}s)`);
 		for (let i = 0; i < SERVER_RETRY_COUNT; i += 1) {
+			assertRuntimeRunning();
 			if (await isOpenCodeServerHealthy()) {
+				assertRuntimeRunning();
 				serverStartingPromise = null;
 				output?.appendLine('[Open Pixel Agents] OpenCode server is ready');
 				return;
 			}
-			await delay(SERVER_RETRY_DELAY_MS);
+			assertRuntimeRunning();
+			await delay(SERVER_RETRY_DELAY_MS, runtimeLifetime.signal);
 		}
 		serverStartingPromise = null;
 		throw new Error('Timed out waiting for OpenCode server to become ready');
 	})();
 	return serverStartingPromise;
+}
+
+export function shutdownOpenCodeRuntime(): Promise<void> {
+	runtimeLifetime.abort();
+	runtimeShutdownTask ??= (async () => {
+		if (!runtimeOptions) { return; }
+		await serverStartingPromise?.catch(() => undefined);
+		const child = managedServerProcess;
+		const terminal = serverTerminal;
+		serverTerminal = null;
+		resolvedServerPort = null;
+		terminal?.dispose();
+		if (!child || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) { return; }
+		await new Promise<void>((resolve, reject) => {
+			const killTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
+			const deadline = setTimeout(() => { cleanup(); reject(new Error('The office runtime did not stop. Close this VS Code window before reopening the office.')); }, 5000);
+			const cleanup = (): void => { clearTimeout(killTimer); clearTimeout(deadline); child.removeListener('exit', done); };
+			const done = (): void => { cleanup(); resolve(); };
+			child.once('exit', done);
+			child.kill();
+		});
+		managedServerProcess = undefined;
+	})();
+	return runtimeShutdownTask;
 }
 
 

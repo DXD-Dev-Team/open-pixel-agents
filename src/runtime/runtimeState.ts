@@ -1,4 +1,5 @@
 import type { RuntimeSessionSnapshot, RuntimeSessionStatus } from './runtimeAdapter.js';
+import type { OfficeLabel } from '../officeBridge.js';
 
 export const COMPLETING_GRACE_MS = 3000;
 
@@ -67,6 +68,7 @@ export interface SubagentRuntimeVm {
 	permissionAsked: boolean;
 	tools: ToolVm[];
 	completionHint?: string;
+	officeLabel?: OfficeLabel;
 }
 
 export interface AgentRuntimeVm {
@@ -76,6 +78,7 @@ export interface AgentRuntimeVm {
 	permissionAsked: boolean;
 	tools: ToolVm[];
 	subagents: SubagentRuntimeVm[];
+	officeLabel?: OfficeLabel;
 }
 
 export function createRuntimeStore(): RuntimeStore {

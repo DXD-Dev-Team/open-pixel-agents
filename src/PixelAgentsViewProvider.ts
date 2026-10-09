@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentState } from './types.js';
 import type { AgentLaunchOptions } from './agentManager.js';
-import type { OfficeAgentBinding, OfficeAgentInput, OfficeServerConnection } from './officeBridge.js';
+import type { OfficeAgentBinding, OfficeAgentInput, OfficeBridgeEvent, OfficeServerConnection, OfficeVisualSnapshot, OfficeWorkerMetadata } from './officeBridge.js';
 import {
 	launchNewTerminal,
 	removeAgent,
@@ -15,13 +15,14 @@ import {
 	getProjectDirPath,
 } from './agentManager.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
-import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, WORKSPACE_KEY_OPENCODE_SERVER_PORT, VIEW_ID, OFFICE_BRIDGE_READY_TIMEOUT_MS } from './constants.js';
+import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, WORKSPACE_KEY_OPENCODE_SERVER_PORT, VIEW_ID, OFFICE_BRIDGE_READY_TIMEOUT_MS, OFFICE_SNAPSHOT_TIMEOUT_MS } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { OpenCodeRuntimeAdapter } from './runtime/openCodeRuntimeAdapter.js';
-import { resetOpenCodeServerTerminal } from './opencodeClient.js';
+import { getOpenCodeEnvironment, isOfficeDeskManaged, resetOpenCodeServerTerminal } from './opencodeClient.js';
 import { RuntimeController } from './runtime/runtimeController.js';
+import { normalizeOfficeMetadata } from './runtime/officeTelemetry.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	nextAgentId = { current: 1 };
@@ -47,6 +48,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	private resolveReady: () => void = () => undefined;
 	private rejectReady: (error: Error) => void = () => undefined;
 	private ready = this.createReadyPromise();
+	readonly bridgeEvents = new vscode.EventEmitter<OfficeBridgeEvent>();
+	private snapshotIndex = 0;
+	private readonly pendingSnapshots = new Map<number, { resolve: (snapshot: OfficeVisualSnapshot) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingCapacity = new Map<number, { resolve: (seatId: string | null) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private managedCreateTail: Promise<unknown> = Promise.resolve();
+	private viewListeners: vscode.Disposable[] = [];
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -105,11 +112,14 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		return ready;
 	}
 
-	private async ensureReady(): Promise<void> {
+	private async ensureReady(show = true): Promise<void> {
 		if (this.isDisposing) {
 			throw new Error('Open Pixel Agents: The office is shutting down.');
 		}
-		await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+		if (show || !this.initialization) {
+			await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+			this.webviewView?.show(false);
+		}
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
@@ -160,10 +170,29 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			port: agent.serverPort,
 			url: `http://127.0.0.1:${agent.serverPort}`,
 			readOnly: true,
+			metadata: agent.officeMetadata,
 		};
 	}
 
 	async createManagedAgent(input: OfficeAgentInput): Promise<OfficeAgentBinding> {
+		const operation = this.managedCreateTail.then(() => this.createManagedAgentNow(input));
+		this.managedCreateTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private async reserveComputerDesk(requestId: number): Promise<string | null> {
+		return new Promise<string | null>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingCapacity.delete(requestId);
+				void this.webview?.postMessage({ type: 'officeSeatRelease', requestId });
+				reject(new Error('The office did not acknowledge its available computer desks.'));
+			}, OFFICE_SNAPSHOT_TIMEOUT_MS);
+			this.pendingCapacity.set(requestId, { resolve, reject, timer });
+			void this.webview?.postMessage({ type: 'officeSeatCapacityRequest', requestId });
+		});
+	}
+
+	private async createManagedAgentNow(input: OfficeAgentInput): Promise<OfficeAgentBinding> {
 		const displayName = input.displayName?.trim();
 		if (!displayName || displayName.length > 100 || /[\r\n\0]/.test(displayName)) {
 			throw new Error('Open Pixel Agents: A display name of 1–100 characters is required.');
@@ -177,12 +206,54 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			throw new Error('Open Pixel Agents: The bridge spike requires the window server workspace directory.');
 		}
 		await this.ensureReady();
-		const agent = await this.createAgent(cwd, { displayName, readOnly: true });
+		const metadata = input.metadata ? normalizeOfficeMetadata(input.metadata) : undefined;
+		const reservationId = ++this.snapshotIndex;
+		if (!await this.reserveComputerDesk(reservationId)) {
+			throw new Error('Add an available chair facing a desk with a computer in the office Layout editor before starting another worker.');
+		}
+		let agent: AgentState | undefined;
+		try {
+			agent = await this.createAgent(cwd, { displayName, readOnly: true, metadata, reservationId });
+		} finally {
+			void this.webview?.postMessage({ type: 'officeSeatRelease', requestId: reservationId });
+		}
 		if (!agent) {
 			throw new Error('Open Pixel Agents: Could not create the managed session.');
 		}
 		await this.persistAgents();
-		return this.managedBinding(agent);
+		const binding = this.managedBinding(agent);
+		this.bridgeEvents.fire({ type: 'changed', agentId: agent.id, binding });
+		return binding;
+	}
+
+	async setManagedMetadata(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
+		await this.ensureReady(false);
+		const agent = this.agents.get(agentId);
+		if (!agent?.readOnly) {
+			throw new Error('Open Pixel Agents: No managed agent exists with this id.');
+		}
+		agent.officeMetadata = normalizeOfficeMetadata(patch, agent.officeMetadata);
+		this.controller.updateMetadata(agentId, patch);
+		await this.persistAgents();
+		const binding = this.managedBinding(agent);
+		this.bridgeEvents.fire({ type: 'changed', agentId, binding });
+		return binding;
+	}
+
+	async getVisualSnapshot(): Promise<OfficeVisualSnapshot> {
+		if (getOpenCodeEnvironment().OPEN_PIXEL_AGENTS_TEST_SNAPSHOT !== '1') {
+			throw new Error('Open Pixel Agents: Visual snapshots are enabled only in the test host.');
+		}
+		await this.ensureReady();
+		const requestId = ++this.snapshotIndex;
+		return new Promise<OfficeVisualSnapshot>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingSnapshots.delete(requestId);
+				reject(new Error('Open Pixel Agents: The office canvas did not acknowledge the snapshot request.'));
+			}, OFFICE_SNAPSHOT_TIMEOUT_MS);
+			this.pendingSnapshots.set(requestId, { resolve, reject, timer });
+			void this.webview?.postMessage({ type: 'officeSnapshotRequest', requestId });
+		});
 	}
 
 	async listManagedAgents(): Promise<OfficeAgentBinding[]> {
@@ -215,9 +286,16 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		if (agent.sessionId) {
 			await this.runtime.deleteSession(agent.sessionId);
 		}
+		if (!this.agents.has(agentId)) {
+			await this.persistAgents();
+			return;
+		}
 		this.removeAgentUi(agent.id, true);
 		await this.persistAgents();
 		agent.terminalRef.dispose();
+		if (agent.sessionId) {
+			this.bridgeEvents.fire({ type: 'closed', agentId, sessionId: agent.sessionId });
+		}
 	}
 
 	async closeManagedAgent(agentId: number): Promise<void> {
@@ -230,6 +308,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	resolveWebviewView(webviewView: vscode.WebviewView) {
+		for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 		this.webviewView = webviewView;
 		webviewView.webview.options = { enableScripts: true };
 		webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
@@ -237,20 +316,58 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			if (this.webviewView !== webviewView) {
 				return;
 			}
+			for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 			this.rejectReady(new Error('Open Pixel Agents: The office view was disposed.'));
 			this.webviewView = undefined;
 			this.initialization = null;
 			this.ready = this.createReadyPromise();
 		}));
 
-		webviewView.webview.onDidReceiveMessage(async (message) => {
+		this.viewListeners.push(webviewView.webview.onDidReceiveMessage(async (message) => {
 			if (message.type === 'openAgentSession') {
-				await this.createAgent(message.folderPath as string | undefined);
+				if (isOfficeDeskManaged()) {
+					await vscode.commands.executeCommand('office-desk.createWorker');
+				} else {
+					await this.createAgent(message.folderPath as string | undefined);
+				}
+			} else if (message.type === 'officeSeatCapacity') {
+				const pending = this.pendingCapacity.get(message.requestId as number);
+				if (pending) {
+					this.pendingCapacity.delete(message.requestId as number);
+					clearTimeout(pending.timer);
+					if (message.seatId !== null && typeof message.seatId !== 'string') {
+						pending.reject(new Error('The office returned invalid computer desk availability.'));
+					} else {
+						pending.resolve(message.seatId as string | null);
+					}
+				}
+			} else if (message.type === 'officeSnapshotReady') {
+				if (this.pendingSnapshots.has(message.requestId as number)) {
+					this.output.appendLine(`[Office canvas snapshot] ${JSON.stringify(message.diagnostic)}`);
+				}
+			} else if (message.type === 'officeSnapshot') {
+				const pending = this.pendingSnapshots.get(message.requestId as number);
+				if (pending) {
+					this.pendingSnapshots.delete(message.requestId as number);
+					clearTimeout(pending.timer);
+					if (typeof message.png !== 'string' || !message.png.startsWith('data:image/png;base64,') || !Array.isArray(message.characters)) {
+						pending.reject(new Error('Open Pixel Agents: The office canvas returned an invalid snapshot.'));
+					} else {
+						pending.resolve({ png: message.png, characters: message.characters });
+					}
+				}
 			} else if (message.type === 'focusAgent') {
 				this.focusAgent(message.id as number);
 			} else if (message.type === 'closeAgent') {
 				try {
-					await this.closeAgent(message.id as number);
+					const agent = this.agents.get(message.id as number);
+					if (isOfficeDeskManaged() && agent?.officeMetadata?.workerId) {
+						await vscode.commands.executeCommand('office-desk.closeWorker', agent.officeMetadata.workerId);
+					} else if (isOfficeDeskManaged()) {
+						void vscode.window.showInformationMessage('Close this managed session from Office Desk.');
+					} else {
+						await this.closeAgent(message.id as number);
+					}
 				} catch {
 					void vscode.window.showErrorMessage('Open Pixel Agents: Could not delete the OpenCode session. The agent remains registered.');
 				}
@@ -315,9 +432,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					vscode.window.showErrorMessage('Open Pixel Agents: Failed to read or parse layout file.');
 				}
 			}
-		});
+		}));
 
-		vscode.window.onDidChangeActiveTerminal((terminal) => {
+		this.viewListeners.push(vscode.window.onDidChangeActiveTerminal((terminal) => {
 			this.activeAgentId.current = null;
 			if (!terminal) {
 				return;
@@ -329,9 +446,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					break;
 				}
 			}
-		});
+		}));
 
-		vscode.window.onDidCloseTerminal((closed) => {
+		this.viewListeners.push(vscode.window.onDidCloseTerminal((closed) => {
 			const serverClose = resetOpenCodeServerTerminal(closed);
 			if (serverClose.wasServerTerminal) {
 				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -361,7 +478,10 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						this.activeAgentId.current = null;
 					}
 					if (agent.readOnly && !this.isDisposing) {
-						void this.closeAgent(id).catch(() => {
+						const close = isOfficeDeskManaged() && agent.officeMetadata?.workerId
+							? vscode.commands.executeCommand('office-desk.closeWorker', agent.officeMetadata.workerId)
+							: this.closeAgent(id);
+						void Promise.resolve(close).catch(() => {
 							this.output.appendLine('[Open Pixel Agents] Could not delete the managed session after its terminal closed.');
 						});
 					} else {
@@ -369,7 +489,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					}
 				}
 			}
-		});
+		}));
 	}
 
 	private async bootstrapWebview(): Promise<void> {
@@ -529,7 +649,18 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		}
 		this.runtimeEvents = this.runtime.subscribeToEvents(
 			(event) => {
-				this.controller.handleEvent(event);
+				const tracked = this.controller.handleEvent(event);
+				if (tracked) {
+					this.bridgeEvents.fire({ type: 'runtime', ...tracked, event });
+					if (event.payload.type === 'session.deleted') {
+						const agent = this.agents.get(tracked.agentId);
+						if (agent?.sessionId === tracked.sessionId) {
+							this.removeAgentUi(agent.id, true);
+							agent.terminalRef.dispose();
+							this.bridgeEvents.fire({ type: 'closed', agentId: agent.id, sessionId: tracked.sessionId });
+						}
+					}
+				}
 			},
 			(error) => {
 				this.output.appendLine(`[Open Pixel Agents] OpenCode event stream error: ${String(error)}`);
@@ -566,8 +697,20 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	dispose() {
+		for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 		this.isDisposing = true;
-		this.rejectReady(new Error('Open Pixel Agents: The office is shutting down.'));
+			this.rejectReady(new Error('Open Pixel Agents: The office is shutting down.'));
+			for (const pending of this.pendingSnapshots.values()) {
+				clearTimeout(pending.timer);
+				pending.reject(new Error('Open Pixel Agents: The office is shutting down.'));
+			}
+			this.pendingSnapshots.clear();
+			for (const pending of this.pendingCapacity.values()) {
+				clearTimeout(pending.timer);
+				pending.reject(new Error('The office is shutting down.'));
+			}
+			this.pendingCapacity.clear();
+			this.bridgeEvents.dispose();
 		this.runtimeEvents?.dispose();
 		this.runtimeEvents = null;
 		this.runtimeController?.dispose();

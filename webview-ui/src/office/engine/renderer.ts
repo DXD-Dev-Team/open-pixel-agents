@@ -1,7 +1,7 @@
 import { TileType, TILE_SIZE, CharacterState } from '../types.js'
 import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor } from '../types.js'
 import { getCachedSprite, getOutlineSprite } from '../sprites/spriteCache.js'
-import { getCharacterSprites, BUBBLE_PERMISSION_SPRITE, BUBBLE_WAITING_SPRITE } from '../sprites/spriteData.js'
+import { getCharacterSprites } from '../sprites/spriteData.js'
 import { getCharacterSprite } from './characters.js'
 import { renderMatrixEffect } from './matrixEffect.js'
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles.js'
@@ -20,9 +20,16 @@ import {
   BUTTON_ICON_SIZE_FACTOR,
   BUTTON_LINE_WIDTH_MIN,
   BUTTON_LINE_WIDTH_ZOOM_FACTOR,
-  BUBBLE_FADE_DURATION_SEC,
   BUBBLE_SITTING_OFFSET_PX,
   BUBBLE_VERTICAL_OFFSET_PX,
+  OFFICE_LABEL_FONT_PX,
+  OFFICE_LABEL_LINE_HEIGHT_PX,
+  OFFICE_LABEL_PADDING_PX,
+  OFFICE_LABEL_MAX_NAME_WIDTH_PX,
+  OFFICE_LABEL_MANAGED_VERTICAL_OFFSET_PX,
+  OFFICE_SPEECH_MAX_WIDTH_PX,
+  OFFICE_SPEECH_MAX_LINES,
+  OFFICE_SPEECH_LABEL_GAP_PX,
   FALLBACK_FLOOR_COLOR,
   SEAT_OWN_COLOR,
   SEAT_AVAILABLE_COLOR,
@@ -455,57 +462,81 @@ export function renderBubbles(
   zoom: number,
 ): void {
   for (const ch of characters) {
-    if (!ch.bubbleType) continue
-
-    if (ch.bubbleType === 'done') {
-      let alpha = 1.0
-      if (ch.bubbleTimer < BUBBLE_FADE_DURATION_SEC) {
-        alpha = ch.bubbleTimer / BUBBLE_FADE_DURATION_SEC
-      }
-      const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
-      const centerX = Math.round(offsetX + ch.x * zoom)
-      const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - 18 * zoom)
-      const bubbleW = Math.round(38 * zoom)
-      const bubbleH = Math.round(12 * zoom)
-      const bubbleX = Math.round(centerX - bubbleW / 2)
-
-      ctx.save()
-      if (alpha < 1.0) ctx.globalAlpha = alpha
-      ctx.fillStyle = '#202020'
-      ctx.fillRect(bubbleX - zoom, bubbleY - zoom, bubbleW + zoom * 2, bubbleH + zoom * 2)
-      ctx.fillStyle = '#f7f7f2'
-      ctx.fillRect(bubbleX, bubbleY, bubbleW, bubbleH)
-      ctx.fillStyle = '#202020'
-      ctx.fillRect(centerX - zoom, bubbleY + bubbleH, zoom * 2, zoom * 2)
-      ctx.font = `${Math.max(8, Math.round(7 * zoom))}px monospace`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText('Done', centerX, bubbleY + bubbleH / 2 + 1)
-      ctx.restore()
-      continue
-    }
-
-    const sprite = ch.bubbleType === 'permission'
-      ? BUBBLE_PERMISSION_SPRITE
-      : BUBBLE_WAITING_SPRITE
-
-    // Compute opacity: permission = full, waiting = fade in last 0.5s
-    let alpha = 1.0
-    if (ch.bubbleType === 'waiting' && ch.bubbleTimer < BUBBLE_FADE_DURATION_SEC) {
-      alpha = ch.bubbleTimer / BUBBLE_FADE_DURATION_SEC
-    }
-
-    const cached = getCachedSprite(sprite, zoom)
-    // Position: centered above the character's head
-    // Character is anchored bottom-center at (ch.x, ch.y), sprite is 16x24
-    // Place bubble above head with a small gap; follow sitting offset
-    const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
-    const bubbleX = Math.round(offsetX + ch.x * zoom - cached.width / 2)
-    const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - cached.height - 1 * zoom)
-
+    const label = ch.officeLabel
+    const scale = Math.max(1, zoom)
+    const lineHeight = OFFICE_LABEL_LINE_HEIGHT_PX * scale
+    const padding = OFFICE_LABEL_PADDING_PX * scale
     ctx.save()
-    if (alpha < 1.0) ctx.globalAlpha = alpha
-    ctx.drawImage(cached, bubbleX, bubbleY)
+    ctx.font = `${OFFICE_LABEL_FONT_PX * scale}px monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const maxNameWidth = OFFICE_LABEL_MAX_NAME_WIDTH_PX * scale
+    let name = label.name
+    if (ctx.measureText(name).width > maxNameWidth) {
+      while (name.length > 1 && ctx.measureText(name + '…').width > maxNameWidth) name = name.slice(0, -1)
+      name += '…'
+    }
+    const lines = [name, `${label.needsInput ? '✋ ' : ''}${label.status}`]
+    if (label.providerKind === 'codex') {
+      const tokens = Math.max(0, Math.round(label.usageTokens ?? 0))
+      let usage = tokens === 0 ? '0' : `${tokens.toLocaleString()} tokens`
+      if (tokens > 0 && label.estimatedCost !== undefined) usage += ` · ~$${label.estimatedCost.toFixed(4)}`
+      lines.push(usage)
+    }
+    const width = Math.ceil(Math.max(...lines.map((line) => ctx.measureText(line).width)) + padding * 2)
+    const height = Math.ceil(lines.length * lineHeight + padding * 2)
+    const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
+    const centerX = Math.round(offsetX + ch.x * zoom)
+    const x = Math.max(scale, Math.min(ctx.canvas.width - width - scale, Math.round(centerX - width / 2)))
+    const verticalOffset = label.managed ? OFFICE_LABEL_MANAGED_VERTICAL_OFFSET_PX : BUBBLE_VERTICAL_OFFSET_PX
+    const y = Math.max(scale, Math.round(offsetY + (ch.y + sittingOff - verticalOffset) * zoom - height - scale))
+    const accent = label.needsInput ? '#f0b44a' : label.status === 'failed' ? '#ef7373' : '#5f8e82'
+    ctx.fillStyle = accent
+    ctx.fillRect(x - scale, y - scale, width + scale * 2, height + scale * 2)
+    ctx.fillStyle = '#182526'
+    ctx.fillRect(x, y, width, height)
+    ctx.fillStyle = accent
+    ctx.fillRect(centerX - scale, y + height, scale * 2, scale * 2)
+    for (let index = 0; index < lines.length; index++) {
+      ctx.fillStyle = index === 0 ? '#f2f5e8' : index === 1 ? accent : '#b4ccc4'
+      ctx.fillText(lines[index], x + width / 2, y + padding + lineHeight * (index + 0.5))
+    }
+    const speech = label.speech
+    if (speech && speech.expiresAt > Date.now()) {
+      const maxWidth = OFFICE_SPEECH_MAX_WIDTH_PX * scale
+      const words = speech.text.split(' ')
+      const spokenLines: string[] = []
+      let current = ''
+      for (const word of words) {
+        const candidate = current ? `${current} ${word}` : word
+        if (current && ctx.measureText(candidate).width > maxWidth) {
+          spokenLines.push(current)
+          current = word
+        } else current = candidate
+      }
+      if (current) spokenLines.push(current)
+      const truncated = spokenLines.length > OFFICE_SPEECH_MAX_LINES
+      spokenLines.length = Math.min(spokenLines.length, OFFICE_SPEECH_MAX_LINES)
+      for (let index = 0; index < spokenLines.length; index++) {
+        let line = spokenLines[index]
+        const suffix = index === spokenLines.length - 1 && truncated ? '…' : ''
+        while (line.length > 1 && ctx.measureText(line + suffix).width > maxWidth) line = line.slice(0, -1)
+        spokenLines[index] = line + suffix
+      }
+      const speechWidth = Math.ceil(Math.max(...spokenLines.map(line => ctx.measureText(line).width)) + padding * 2)
+      const speechHeight = Math.ceil(spokenLines.length * lineHeight + padding * 2)
+      const speechX = Math.max(scale, Math.min(ctx.canvas.width - speechWidth - scale, Math.round(centerX - speechWidth / 2)))
+      const speechY = Math.max(scale, y - speechHeight - OFFICE_SPEECH_LABEL_GAP_PX * scale)
+      ctx.fillStyle = '#587379'
+      ctx.fillRect(speechX - scale, speechY - scale, speechWidth + scale * 2, speechHeight + scale * 2)
+      ctx.fillStyle = '#f2eedc'
+      ctx.fillRect(speechX, speechY, speechWidth, speechHeight)
+      ctx.fillRect(centerX - scale, speechY + speechHeight, scale * 2, scale * 2)
+      ctx.fillStyle = '#24383c'
+      for (let index = 0; index < spokenLines.length; index++) {
+        ctx.fillText(spokenLines[index], speechX + speechWidth / 2, speechY + padding + lineHeight * (index + 0.5))
+      }
+    }
     ctx.restore()
   }
 }

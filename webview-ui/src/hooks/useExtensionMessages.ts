@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { OfficeState } from '../office/engine/officeState.js'
-import type { OfficeLayout, ToolActivity } from '../office/types.js'
+import type { OfficeLayout, ToolActivity, OfficeLabel } from '../office/types.js'
 import { extractToolName } from '../office/toolUtils.js'
-import { migrateLayoutColors } from '../office/layout/layoutSerializer.js'
-import { buildDynamicCatalog } from '../office/layout/furnitureCatalog.js'
+import { createDefaultLayout, migrateLayoutColors } from '../office/layout/layoutSerializer.js'
+import { buildDynamicCatalog, getCatalogEntry } from '../office/layout/furnitureCatalog.js'
+import { OFFICE_CANVAS_FLUSH_EVENT, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS } from '../constants.js'
 import { setFloorSprites } from '../office/floorTiles.js'
 import { setWallSprites } from '../office/wallTiles.js'
 import { setCharacterTemplates } from '../office/sprites/spriteData.js'
@@ -36,6 +37,7 @@ interface RuntimeSubagentVm {
   permissionAsked: boolean
   tools: RuntimeToolVm[]
   completionHint?: string
+  officeLabel?: OfficeLabel
 }
 
 interface RuntimeAgentVm {
@@ -45,6 +47,7 @@ interface RuntimeAgentVm {
   permissionAsked: boolean
   tools: RuntimeToolVm[]
   subagents: RuntimeSubagentVm[]
+  officeLabel?: OfficeLabel
 }
 
 export interface FurnitureAsset {
@@ -91,6 +94,7 @@ function syncRuntimeAgent(
   setSubagentCharacters: Dispatch<SetStateAction<SubagentCharacter[]>>,
 ): void {
   const agentId = vm.agentId
+  if (vm.officeLabel) os.setOfficeLabel(agentId, vm.officeLabel)
   const agentToolList: ToolActivity[] = vm.tools.map((tool) => ({
     toolId: tool.id,
     status: tool.label,
@@ -100,7 +104,8 @@ function syncRuntimeAgent(
   setAgentTools((prev) => ({ ...prev, [agentId]: agentToolList }))
   setAgentStatuses((prev) => ({ ...prev, [agentId]: vm.status }))
 
-  os.setAgentActive(agentId, vm.status !== 'waiting')
+  os.setAgentActive(agentId, vm.officeLabel?.managed
+    ? vm.officeLabel.status === 'working' || vm.officeLabel.status === 'reading' : vm.status !== 'waiting')
   os.setAgentTool(agentId, vm.tools[0] ? vm.tools[0].name : null)
   if (vm.permissionAsked) {
     os.showPermissionBubble(agentId)
@@ -136,6 +141,11 @@ function syncRuntimeAgent(
   for (const sub of vm.subagents) {
     const subKey = sub.id
     const subId = os.addSubagent(agentId, subKey)
+    if (subId === null) continue
+    const parentLabel = vm.officeLabel ?? os.characters.get(agentId)?.officeLabel
+    if (sub.officeLabel) os.setOfficeLabel(subId, sub.officeLabel)
+    else if (parentLabel) os.setOfficeLabel(subId, { ...parentLabel, status: sub.status === 'completing' ? 'done' : 'working', needsInput: sub.permissionAsked, speech: undefined,
+      ...(parentLabel.providerKind === 'codex' ? { usageTokens: 0, estimatedCost: undefined } : {}) })
     os.setSubagentSessionId(subId, sub.sessionId || undefined)
     nextCharacters.push({ id: subId, parentAgentId: agentId, parentToolId: subKey, sessionId: sub.sessionId || undefined, label: sub.label, status: sub.status, completionHint: sub.completionHint })
     nextSubagentTools[subKey] = sub.tools.map((tool) => ({
@@ -202,6 +212,45 @@ export function useExtensionMessages(
       const msg = e.data
       const os = getOfficeState()
 
+      if (msg.type === 'officeSeatCapacityRequest') {
+        vscode.postMessage({ type: 'officeSeatCapacity', requestId: msg.requestId, seatId: os.reserveComputerDesk(msg.requestId) })
+        return
+      }
+      if (msg.type === 'officeSeatRelease') {
+        os.releaseComputerDesk(msg.requestId)
+        return
+      }
+
+      if (msg.type === 'officeSnapshotRequest') {
+        const currentCanvas = document.querySelector<HTMLCanvasElement>('canvas[data-office-canvas]')
+        vscode.postMessage({ type: 'officeSnapshotReady', requestId: msg.requestId,
+          diagnostic: { canvasPresent: !!currentCanvas, width: currentCanvas?.width,
+            height: currentCanvas?.height, visibility: document.visibilityState } })
+        // Read pixels only after the actual office game loop has rendered the
+        // current character state. This is an acknowledgment, not a mock scene.
+        let captured = false
+        let fallback: ReturnType<typeof setTimeout>
+        const capture = () => {
+          if (captured) return
+          const canvas = document.querySelector<HTMLCanvasElement>('canvas[data-office-canvas]')
+          if (!canvas) return
+          captured = true
+          clearTimeout(fallback)
+          canvas.dispatchEvent(new Event(OFFICE_CANVAS_FLUSH_EVENT))
+          vscode.postMessage({ type: 'officeSnapshot', requestId: msg.requestId,
+            characters: [...os.characters.values()].map((ch) => {
+              const seat = os.seats.get(ch.seatId ?? '')
+              return { id: ch.id, isSubagent: ch.isSubagent, label: { ...ch.officeLabel, speech: ch.officeLabel.speech && ch.officeLabel.speech.expiresAt > Date.now() ? ch.officeLabel.speech : undefined }, seatId: ch.seatId,
+                atSeat: !!seat && ch.tileCol === seat.seatCol && ch.tileRow === seat.seatRow && ch.state === 'type',
+                computerDesk: !!seat?.computerDeskId }
+            }),
+            png: canvas.toDataURL('image/png') })
+        }
+        fallback = setTimeout(capture, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS)
+        requestAnimationFrame(() => requestAnimationFrame(capture))
+        return
+      }
+
       if (msg.type === 'layoutLoaded') {
         // Skip external layout updates while editor has unsaved changes
         if (layoutReadyRef.current && isEditDirty?.()) {
@@ -209,7 +258,12 @@ export function useExtensionMessages(
           return
         }
         const rawLayout = msg.layout as OfficeLayout | null
-        const layout = rawLayout && rawLayout.version === 1 ? migrateLayoutColors(rawLayout) : null
+        let layout = rawLayout && rawLayout.version === 1 ? migrateLayoutColors(rawLayout) : null
+        // The upstream bundled layout references an optional external sprite
+        // pack. Its original hand-drawn office remains usable without that pack.
+        if (layout?.furniture.length && layout.furniture.every(item => !getCatalogEntry(item.type))) {
+          layout = createDefaultLayout()
+        }
         if (layout) {
           os.rebuildFromLayout(layout)
           onLayoutLoaded?.(layout)
@@ -237,7 +291,7 @@ export function useExtensionMessages(
         const id = msg.id as number
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
         setSelectedAgent(id)
-        os.addAgent(id)
+        os.addAgent(id, undefined, undefined, undefined, undefined, msg.managed === true, msg.reservationId)
         saveAgentSeats(os)
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number
@@ -322,6 +376,7 @@ export function useExtensionMessages(
         if (status.startsWith('Subtask:')) {
           const label = status.slice('Subtask:'.length).trim()
           const subId = os.addSubagent(id, toolId)
+          if (subId === null) return
           setSubagentCharacters((prev) => {
             if (prev.some((s) => s.id === subId)) return prev
             return [...prev, { id: subId, parentAgentId: id, parentToolId: toolId, label, status: 'active' }]
@@ -362,6 +417,8 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentSelected') {
         const id = msg.id as number
         setSelectedAgent(id)
+        os.selectedAgentId = id
+        os.cameraFollowId = id
       } else if (msg.type === 'agentStatus') {
         if (runtimeV2Ref.current) return
         const id = msg.id as number
