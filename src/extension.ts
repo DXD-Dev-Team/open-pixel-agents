@@ -40,6 +40,9 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 		setAgentPanelState: (agentId, state) => provider.setAgentPanelState(agentId, state),
 		setRepositories: (repositories) => provider.setRepositories(repositories),
 		openAgentPanel: (agentId) => provider.openAgentPanel(agentId),
+		openBrowserOffice: () => provider.openBrowserOffice(),
+		closeBrowserOffice: () => provider.disposeBrowserOffice(),
+		setDeskState: (state) => provider.setDeskState(state),
 		onDidEvent: provider.bridgeEvents.event,
 		getVisualSnapshot: () => provider.getVisualSnapshot(),
 	};
@@ -47,5 +50,6 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 
 export async function deactivate(): Promise<void> {
 	providerInstance?.dispose();
+	await providerInstance?.disposeBrowserOffice();
 	await shutdownOpenCodeRuntime();
 }

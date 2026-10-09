@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { OfficeRole, OfficeStatus } from '../office/types.js'
 import { OFFICE_ROLE_LABELS } from '../constants.js'
 import './AgentPanel.css'
+import { officeConnection } from '../vscodeApi.js'
 
 export type AgentActionName = 'open' | 'send' | 'start' | 'stop' | 'close' | 'role' | 'manager-mode' | 'assign-team' | 'approve' | 'reject' | 'attention' | 'sign-in' | 'change-account' | 'add-account' | 'manager-repos' | 'manager-scope'
 interface PanelAccount { id: string; name: string; kind: 'claude' | 'codex' | 'grok'; connected: boolean; authType?: string; loginName?: string }
@@ -24,6 +25,7 @@ const roleLabels = OFFICE_ROLE_LABELS
 interface Props { agentId: number; name: string; state?: AgentPanelState; error?: string; childName?: string; draft: string; onDraftChange: (text: string) => void; onAction: (action: AgentPanelAction) => void; onClose: () => void }
 
 export function AgentPanel({ agentId, name, state, error, childName, draft, onDraftChange, onAction, onClose }: Props) {
+  const { connected } = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
   const dialog = useRef<HTMLDivElement>(null)
   const composer = useRef<HTMLTextAreaElement>(null)
   const history = useRef<HTMLDivElement>(null)
@@ -55,7 +57,7 @@ export function AgentPanel({ agentId, name, state, error, childName, draft, onDr
   }, [onClose])
   const submit = () => {
     const text = draft.trim()
-    if (!text || !state || state.busy || state.pending || !state.worker.started) return
+    if (!connected || !text || !state || state.busy || state.pending || !state.worker.started) return
     onAction({ action: 'send', text })
   }
   const saveDraft = onDraftChange
@@ -74,7 +76,8 @@ export function AgentPanel({ agentId, name, state, error, childName, draft, onDr
           <button type="button" className="office-dialog-dismiss" aria-label="Close agent controls" onClick={onClose}>×</button>
         </header>
         {childName && <p className="office-dialog-child">Opened from child “{childName}”. These controls belong to its parent worker.</p>}
-        {!state ? <p className="office-dialog-loading" role="status">Loading this worker’s conversation…</p> : <>
+        {!connected && <p className="office-dialog-error" role="status">Reconnect to VS Code to use these controls.</p>}
+        {!state ? <p className="office-dialog-loading" role="status">Loading this worker’s conversation…</p> : <fieldset className="office-dialog-runtime" disabled={!connected}>
           <div className="office-dialog-controls">
             <span className={`office-dialog-status office-status-${state.worker.status.replace(' ', '-')}`}>{state.worker.status}</span>
             <label>Role<select aria-label="Worker role" value={state.worker.role} disabled={state.busy || state.pending} onChange={event => onAction({ action: 'role', role: event.target.value as OfficeRole })}>
@@ -114,7 +117,7 @@ export function AgentPanel({ agentId, name, state, error, childName, draft, onDr
             <textarea id="office-agent-message" ref={composer} rows={3} value={draft} maxLength={20_000} onChange={event => saveDraft(event.target.value)} placeholder={state.worker.started ? 'Message this worker…' : 'Start this worker before sending a message.'} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit() } }} />
             <div><span>Enter to send · Shift + Enter for a new line</span>{lastUser && <button type="button" disabled={!idle || !state.worker.started} onClick={() => onAction({ action: 'send', text: lastUser.text })}>Retry last prompt</button>}<button type="submit" disabled={!draft.trim() || !state.worker.started || state.busy || state.pending}>Send</button></div>
           </form>
-        </>}
+        </fieldset>}
         {(error || state?.error) && <p className="office-dialog-error" role="alert">{error || state?.error}</p>}
       </div>
     </div>

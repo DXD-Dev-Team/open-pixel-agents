@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useSyncExternalStore } from 'react'
 import { OfficeState } from './office/engine/officeState.js'
 import { OfficeCanvas } from './office/components/OfficeCanvas.js'
 import { ToolOverlay } from './office/components/ToolOverlay.js'
@@ -6,7 +6,7 @@ import { EditorToolbar } from './office/editor/EditorToolbar.js'
 import { EditorState } from './office/editor/editorState.js'
 import { EditTool } from './office/types.js'
 import { isRotatable } from './office/layout/furnitureCatalog.js'
-import { vscode } from './vscodeApi.js'
+import { isBrowserOffice, officeConnection, vscode } from './vscodeApi.js'
 import { useExtensionMessages } from './hooks/useExtensionMessages.js'
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js'
 import { useEditorActions } from './hooks/useEditorActions.js'
@@ -16,6 +16,7 @@ import { BottomToolbar } from './components/BottomToolbar.js'
 import { AgentPanel } from './components/AgentPanel.js'
 import { useAgentPanel } from './hooks/useAgentPanel.js'
 import { DebugView } from './components/DebugView.js'
+import { BrowserDesk } from './components/BrowserDesk.js'
 
 // Game state lives outside React — updated imperatively by message handlers
 const officeStateRef = { current: null as OfficeState | null }
@@ -124,6 +125,7 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
 }
 
 function App() {
+  const connection = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
   const panel = useAgentPanel(getOfficeState)
   const editor = useEditorActions(getOfficeState, editorState)
 
@@ -187,13 +189,15 @@ function App() {
   if (!layoutReady) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--vscode-foreground)' }}>
-        Loading...
+        {isBrowserOffice ? connection.state === 'expired' ? 'Open Browser Office from VS Code to begin a new session.' : connection.connected ? 'Preparing the shared office…' : 'Waiting for the VS Code office…' : 'Loading the office…'}
+        {isBrowserOffice && <BrowserDesk key="browser-desk" openAgent={panel.open} />}
       </div>
     )
   }
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+      {isBrowserOffice && <BrowserDesk key="browser-desk" openAgent={panel.open} />}
       <style>{`
         @keyframes open-pixel-agents-pulse {
           0%, 100% { opacity: 1; }

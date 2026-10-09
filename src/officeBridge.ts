@@ -141,6 +141,9 @@ export interface OfficeBridgeApi {
 	setAgentPanelState(agentId: number, state: unknown): Promise<void>;
 	openAgentPanel(agentId: number): Promise<void>;
 	setRepositories(repositories: OfficeRepository[]): Promise<void>;
+	openBrowserOffice(): Promise<string>;
+	closeBrowserOffice(): Promise<void>;
+	setDeskState(state: unknown): void;
 	readonly onDidEvent: vscode.Event<OfficeBridgeEvent>;
 	getVisualSnapshot(): Promise<OfficeVisualSnapshot>;
 }

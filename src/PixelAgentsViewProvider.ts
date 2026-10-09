@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { BrowserOfficeServer } from './browserOfficeServer.js';
 import type { AgentState } from './types.js';
 import type { AgentLaunchOptions } from './agentManager.js';
 import type { OfficeAgentBinding, OfficeAgentInput, OfficeBridgeEvent, OfficeServerConnection, OfficeVisualSnapshot, OfficeWorkerMetadata, OfficeAgentPanelState, OfficeRole, OfficeRepository } from './officeBridge.js';
@@ -60,6 +61,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	private readonly panelStates = new Map<number, OfficeAgentPanelState>();
 	private managedCreateTail: Promise<unknown> = Promise.resolve();
 	private viewListeners: vscode.Disposable[] = [];
+	private browserServer?: BrowserOfficeServer;
+	private browserClosing?: Promise<void>;
+	private readonly browserListeners = new Set<(message: unknown) => void>();
+	private readonly browserBootstrap = new Map<string, Record<string, unknown>>();
+	private browserDeskState: Record<string, unknown> = { ready: false, workers: [], accounts: [], attention: [], repositories: [] };
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -71,7 +77,109 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private get webview(): vscode.Webview | undefined {
-		return this.webviewView?.webview;
+		const webview = this.webviewView?.webview;
+		if (!webview) {
+			// A disposed native view must not leave a connected browser frozen.
+			// Native seat transactions still require ensureReady and native ACKs.
+			return this.browserListeners.size ? { postMessage: (message: Record<string, unknown>) => {
+				this.broadcastBrowser(message);
+				return Promise.resolve(true);
+			} } as unknown as vscode.Webview : undefined;
+		}
+		return new Proxy(webview, { get: (target, key) => {
+			if (key === 'postMessage') { return (message: Record<string, unknown>) => {
+				this.broadcastBrowser(message);
+				return target.postMessage(message);
+			}; }
+			const value = Reflect.get(target, key, target) as unknown;
+			return typeof value === 'function' ? value.bind(target) : value;
+		} });
+	}
+
+	private broadcastBrowser(message: Record<string, unknown>): void {
+		const type = String(message.type);
+		if (['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded', 'officeRepositories'].includes(type)) {
+			this.browserBootstrap.set(type, message);
+		}
+		// Native seat transactions, diagnostics and selection remain native-only.
+		if (!BROWSER_VIEW_MESSAGES.has(type)) { return; }
+		for (const send of this.browserListeners) { send(message); }
+	}
+
+	async openBrowserOffice(): Promise<string> {
+		await this.browserClosing;
+		await this.ensureReady(false);
+		this.browserServer ??= new BrowserOfficeServer({
+			assetsDirectory: path.join(this.extensionUri.fsPath, 'dist', 'webview'),
+			connect: async send => {
+				await this.ensureReady(false);
+				if (this.isDisposing) { throw new Error('The office is shutting down.'); }
+				// Synchronous replay and registration prevent a gap between bootstrap
+				// and live updates. No runtime event or credential history is retained.
+				send({ type: 'officeBrowserBootstrap' });
+				this.browserListeners.add(send);
+				try {
+					const sink = { postMessage: (message: Record<string, unknown>) => { if (BROWSER_VIEW_MESSAGES.has(String(message.type))) { send(message); } return Promise.resolve(true); } } as unknown as vscode.Webview;
+					for (const type of ['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'officeRepositories']) {
+						const message = this.browserBootstrap.get(type);
+						if (message) { send(message); }
+					}
+					sendExistingAgents(this.agents, this.context, sink);
+					const layout = this.browserBootstrap.get('layoutLoaded');
+					if (layout) { send(layout); }
+					this.controller.postSnapshot();
+					for (const [agentId, state] of this.panelStates) { send({ type: 'officeAgentPanel', agentId, state }); }
+					send({ type: 'officeDeskState', state: this.browserDeskState });
+					return { dispose: () => { this.browserListeners.delete(send); } };
+				} catch (error) { this.browserListeners.delete(send); throw error; }
+			},
+			dispatch: message => this.handleBrowserMessage(message),
+		});
+		const { url } = await this.browserServer.start();
+		if (this.isDisposing) { await this.disposeBrowserOffice(); throw new Error('The office is shutting down.'); }
+		return url;
+	}
+
+	async disposeBrowserOffice(): Promise<void> {
+		if (this.browserClosing) { return this.browserClosing; }
+		this.browserListeners.clear();
+		const server = this.browserServer;
+		this.browserServer = undefined;
+		if (!server) { return; }
+		const closing = server.dispose();
+		this.browserClosing = closing;
+		try { await closing; } finally { if (this.browserClosing === closing) { this.browserClosing = undefined; } }
+	}
+
+	setDeskState(input: unknown): void {
+		this.browserDeskState = browserDeskState(input);
+		this.broadcastBrowser({ type: 'officeDeskState', state: this.browserDeskState });
+	}
+
+	private async handleBrowserMessage(input: unknown): Promise<void> {
+		if (this.isDisposing) { throw new Error('The office is shutting down.'); }
+		if (!input || typeof input !== 'object' || Array.isArray(input)) { throw new Error('Invalid office message.'); }
+		const message = input as Record<string, unknown>;
+		if (message.type === 'officeAgentAction') {
+			const action = normalizeAgentAction(message);
+			const agent = this.agents.get(action.agentId);
+			if (!agent?.readOnly || !agent.officeMetadata?.workerId) { throw new Error('Choose a managed office worker.'); }
+			if (action.action === 'open') {
+				await vscode.commands.executeCommand('office-desk.browserAction', { action: 'chatWorker', id: agent.officeMetadata.workerId, browser: true });
+			} else { this.bridgeEvents.fire(action); }
+			return;
+		}
+		if (message.type === 'officeDeskAction') {
+			const safe = browserDeskAction(message);
+			await vscode.commands.executeCommand('office-desk.browserAction', safe);
+			return;
+		}
+		if (message.type === 'openAgentSession') {
+			await vscode.commands.executeCommand('office-desk.browserAction', { action: 'createWorker', browser: true });
+			return;
+		}
+		// This excludes native ACKs, seat/layout writes, snapshots and arbitrary commands.
+		throw new Error('This control is available only in the VS Code office.');
 	}
 
 	private persistAgents = (): PromiseLike<void> => {
@@ -410,134 +518,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			this.ready = this.createReadyPromise();
 		}));
 
-		this.viewListeners.push(webviewView.webview.onDidReceiveMessage(async (message) => {
-			if (message.type === 'officeAgentAction') {
-				try {
-					const action = normalizeAgentAction(message);
-					if (!this.agents.get(action.agentId)?.readOnly) { throw new Error('Only managed workers have these controls.'); }
-					this.bridgeEvents.fire(action);
-				} catch (error) {
-					void this.webview?.postMessage({ type: 'officeAgentActionError', agentId: message.agentId, error: error instanceof Error ? error.message : 'The agent action failed.' });
-				}
-			} else if (message.type === 'openAgentSession') {
-				if (isOfficeDeskManaged()) {
-					await vscode.commands.executeCommand('office-desk.createWorker');
-				} else {
-					await this.createAgent(message.folderPath as string | undefined);
-				}
-			} else if (message.type === 'officeRepositoriesApplied') {
-				const pending = this.pendingRepositories.get(message.requestId as number);
-				if (pending) { this.pendingRepositories.delete(message.requestId as number); clearTimeout(pending.timer); pending.resolve(); }
-			} else if (message.type === 'officeRoleSeatApplied') {
-				const pending = this.pendingRoleApplies.get(message.requestId as number);
-				if (pending) {
-					this.pendingRoleApplies.delete(message.requestId as number);
-					clearTimeout(pending.timer);
-					pending.resolve(message.applied === true);
-				}
-			} else if (message.type === 'officeSeatCapacity') {
-				const pending = this.pendingCapacity.get(message.requestId as number);
-				if (pending) {
-					this.pendingCapacity.delete(message.requestId as number);
-					clearTimeout(pending.timer);
-					if (message.seatId !== null && typeof message.seatId !== 'string') {
-						pending.reject(new Error('The office returned invalid computer desk availability.'));
-					} else {
-						pending.resolve(message.seatId as string | null);
-					}
-				}
-			} else if (message.type === 'officeSnapshotReady') {
-				if (this.pendingSnapshots.has(message.requestId as number)) {
-					this.output.appendLine(`[Office canvas snapshot] ${JSON.stringify(message.diagnostic)}`);
-				}
-			} else if (message.type === 'officeSnapshot') {
-				const pending = this.pendingSnapshots.get(message.requestId as number);
-				if (pending) {
-					this.pendingSnapshots.delete(message.requestId as number);
-					clearTimeout(pending.timer);
-					if (typeof message.png !== 'string' || !message.png.startsWith('data:image/png;base64,') || !Array.isArray(message.characters)) {
-						pending.reject(new Error('Open Pixel Agents: The office canvas returned an invalid snapshot.'));
-					} else {
-						pending.resolve({ png: message.png, characters: message.characters });
-					}
-				}
-			} else if (message.type === 'focusAgent') {
-				this.focusAgent(message.id as number);
-			} else if (message.type === 'closeAgent') {
-				try {
-					const agent = this.agents.get(message.id as number);
-					if (isOfficeDeskManaged() && agent?.officeMetadata?.workerId) {
-						await vscode.commands.executeCommand('office-desk.closeWorker', agent.officeMetadata.workerId);
-					} else if (isOfficeDeskManaged()) {
-						void vscode.window.showInformationMessage('Close this managed session from Office Desk.');
-					} else {
-						await this.closeAgent(message.id as number);
-					}
-				} catch {
-					void vscode.window.showErrorMessage('Open Pixel Agents: Could not delete the OpenCode session. The agent remains registered.');
-				}
-			} else if (message.type === 'saveAgentSeats') {
-				// Store seat assignments in a separate key (never touched by persistAgents)
-				console.log(`[Open Pixel Agents] saveAgentSeats:`, JSON.stringify(message.seats));
-				this.context.workspaceState.update(WORKSPACE_KEY_AGENT_SEATS, message.seats);
-			} else if (message.type === 'saveLayout') {
-				this.layoutWatcher?.markOwnWrite();
-				writeLayoutToFile(message.layout as Record<string, unknown>);
-			} else if (message.type === 'setSoundEnabled') {
-				this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
-			} else if (message.type === 'webviewReady') {
-				if (!this.initialization) {
-					const resolveReady = this.resolveReady;
-					const rejectReady = this.rejectReady;
-					this.initialization = this.bootstrapWebview();
-					void this.initialization.then(resolveReady, () => {
-						rejectReady(new Error('Open Pixel Agents: Office initialization failed.'));
-					});
-				}
-				await this.initialization.catch(() => undefined);
-			} else if (message.type === 'openSessionsFolder') {
-				const projectDir = getProjectDirPath();
-				if (projectDir && fs.existsSync(projectDir)) {
-					vscode.env.openExternal(vscode.Uri.file(projectDir));
-				}
-			} else if (message.type === 'exportLayout') {
-				const layout = readLayoutFromFile();
-				if (!layout) {
-					vscode.window.showWarningMessage('Open Pixel Agents: No saved layout to export.');
-					return;
-				}
-				const uri = await vscode.window.showSaveDialog({
-					filters: { 'JSON Files': ['json'] },
-					defaultUri: vscode.Uri.file(path.join(os.homedir(), 'open-pixel-agents-layout.json')),
-				});
-				if (uri) {
-					fs.writeFileSync(uri.fsPath, JSON.stringify(layout, null, 2), 'utf-8');
-					vscode.window.showInformationMessage('Open Pixel Agents: Layout exported successfully.');
-				}
-			} else if (message.type === 'importLayout') {
-				const uris = await vscode.window.showOpenDialog({
-					filters: { 'JSON Files': ['json'] },
-					canSelectMany: false,
-				});
-				if (!uris || uris.length === 0) {
-					return;
-				}
-				try {
-					const raw = fs.readFileSync(uris[0].fsPath, 'utf-8');
-					const imported = JSON.parse(raw) as Record<string, unknown>;
-					if (imported.version !== 1 || !Array.isArray(imported.tiles)) {
-						vscode.window.showErrorMessage('Open Pixel Agents: Invalid layout file.');
-						return;
-					}
-					this.layoutWatcher?.markOwnWrite();
-					writeLayoutToFile(imported);
-					this.webview?.postMessage({ type: 'layoutLoaded', layout: imported });
-					vscode.window.showInformationMessage('Open Pixel Agents: Layout imported successfully.');
-				} catch {
-					vscode.window.showErrorMessage('Open Pixel Agents: Failed to read or parse layout file.');
-				}
-			}
-		}));
+		this.viewListeners.push(webviewView.webview.onDidReceiveMessage(message => this.handleMessage(message)));
 
 		this.viewListeners.push(vscode.window.onDidChangeActiveTerminal((terminal) => {
 			this.activeAgentId.current = null;
@@ -547,7 +528,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			for (const [id, agent] of this.agents) {
 				if (agent.terminalRef === terminal) {
 					this.activeAgentId.current = id;
-					webviewView.webview.postMessage({ type: 'agentSelected', id });
+					this.webview?.postMessage({ type: 'agentSelected', id });
 					break;
 				}
 			}
@@ -595,6 +576,137 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				}
 			}
 		}));
+	}
+
+	private async handleMessage(message: Record<string, unknown>): Promise<void> {
+		if (message.type === 'officeAgentAction') {
+			try {
+				const action = normalizeAgentAction(message);
+				if (!this.agents.get(action.agentId)?.readOnly) { throw new Error('Only managed workers have these controls.'); }
+				this.bridgeEvents.fire(action);
+			} catch (error) {
+				void this.webview?.postMessage({ type: 'officeAgentActionError', agentId: message.agentId, error: error instanceof Error ? error.message : 'The agent action failed.' });
+			}
+		} else if (message.type === 'openAgentSession') {
+			if (isOfficeDeskManaged()) {
+				await vscode.commands.executeCommand('office-desk.createWorker');
+			} else {
+				await this.createAgent(message.folderPath as string | undefined);
+			}
+		} else if (message.type === 'officeRepositoriesApplied') {
+			const pending = this.pendingRepositories.get(message.requestId as number);
+			if (pending) { this.pendingRepositories.delete(message.requestId as number); clearTimeout(pending.timer); pending.resolve(); }
+		} else if (message.type === 'officeRoleSeatApplied') {
+			const pending = this.pendingRoleApplies.get(message.requestId as number);
+			if (pending) {
+				this.pendingRoleApplies.delete(message.requestId as number);
+				clearTimeout(pending.timer);
+				pending.resolve(message.applied === true);
+			}
+		} else if (message.type === 'officeSeatCapacity') {
+			const pending = this.pendingCapacity.get(message.requestId as number);
+			if (pending) {
+				this.pendingCapacity.delete(message.requestId as number);
+				clearTimeout(pending.timer);
+				if (message.seatId !== null && typeof message.seatId !== 'string') {
+					pending.reject(new Error('The office returned invalid computer desk availability.'));
+				} else {
+					pending.resolve(message.seatId as string | null);
+				}
+			}
+		} else if (message.type === 'officeSnapshotReady') {
+			if (this.pendingSnapshots.has(message.requestId as number)) {
+				this.output.appendLine(`[Office canvas snapshot] ${JSON.stringify(message.diagnostic)}`);
+			}
+		} else if (message.type === 'officeSnapshot') {
+			const pending = this.pendingSnapshots.get(message.requestId as number);
+			if (pending) {
+				this.pendingSnapshots.delete(message.requestId as number);
+				clearTimeout(pending.timer);
+				if (typeof message.png !== 'string' || !message.png.startsWith('data:image/png;base64,') || !Array.isArray(message.characters)) {
+					pending.reject(new Error('Open Pixel Agents: The office canvas returned an invalid snapshot.'));
+				} else {
+					pending.resolve({ png: message.png, characters: message.characters });
+				}
+			}
+		} else if (message.type === 'focusAgent') {
+			this.focusAgent(message.id as number);
+		} else if (message.type === 'closeAgent') {
+			try {
+				const agent = this.agents.get(message.id as number);
+				if (isOfficeDeskManaged() && agent?.officeMetadata?.workerId) {
+					await vscode.commands.executeCommand('office-desk.closeWorker', agent.officeMetadata.workerId);
+				} else if (isOfficeDeskManaged()) {
+					void vscode.window.showInformationMessage('Close this managed session from Office Desk.');
+				} else {
+					await this.closeAgent(message.id as number);
+				}
+			} catch {
+				void vscode.window.showErrorMessage('Open Pixel Agents: Could not delete the OpenCode session. The agent remains registered.');
+			}
+			} else if (message.type === 'saveAgentSeats') {
+			// Store seat assignments in a separate key (never touched by persistAgents)
+			console.log(`[Open Pixel Agents] saveAgentSeats:`, JSON.stringify(message.seats));
+				await this.context.workspaceState.update(WORKSPACE_KEY_AGENT_SEATS, message.seats);
+				this.broadcastBrowser({ type: 'officeAgentSeats', seats: message.seats });
+		} else if (message.type === 'saveLayout') {
+			this.layoutWatcher?.markOwnWrite();
+				writeLayoutToFile(message.layout as Record<string, unknown>);
+				this.broadcastBrowser({ type: 'layoutLoaded', layout: message.layout });
+		} else if (message.type === 'setSoundEnabled') {
+			this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
+		} else if (message.type === 'webviewReady') {
+			if (!this.initialization) {
+				const resolveReady = this.resolveReady;
+				const rejectReady = this.rejectReady;
+				this.initialization = this.bootstrapWebview();
+				void this.initialization.then(resolveReady, () => {
+					rejectReady(new Error('Open Pixel Agents: Office initialization failed.'));
+				});
+			}
+			await this.initialization.catch(() => undefined);
+		} else if (message.type === 'openSessionsFolder') {
+			const projectDir = getProjectDirPath();
+			if (projectDir && fs.existsSync(projectDir)) {
+				vscode.env.openExternal(vscode.Uri.file(projectDir));
+			}
+		} else if (message.type === 'exportLayout') {
+			const layout = readLayoutFromFile();
+			if (!layout) {
+				vscode.window.showWarningMessage('Open Pixel Agents: No saved layout to export.');
+				return;
+			}
+			const uri = await vscode.window.showSaveDialog({
+				filters: { 'JSON Files': ['json'] },
+				defaultUri: vscode.Uri.file(path.join(os.homedir(), 'open-pixel-agents-layout.json')),
+			});
+			if (uri) {
+				fs.writeFileSync(uri.fsPath, JSON.stringify(layout, null, 2), 'utf-8');
+				vscode.window.showInformationMessage('Open Pixel Agents: Layout exported successfully.');
+			}
+		} else if (message.type === 'importLayout') {
+			const uris = await vscode.window.showOpenDialog({
+				filters: { 'JSON Files': ['json'] },
+				canSelectMany: false,
+			});
+			if (!uris || uris.length === 0) {
+				return;
+			}
+			try {
+				const raw = fs.readFileSync(uris[0].fsPath, 'utf-8');
+				const imported = JSON.parse(raw) as Record<string, unknown>;
+				if (imported.version !== 1 || !Array.isArray(imported.tiles)) {
+					vscode.window.showErrorMessage('Open Pixel Agents: Invalid layout file.');
+					return;
+				}
+				this.layoutWatcher?.markOwnWrite();
+				writeLayoutToFile(imported);
+				this.webview?.postMessage({ type: 'layoutLoaded', layout: imported });
+				vscode.window.showInformationMessage('Open Pixel Agents: Layout imported successfully.');
+			} catch {
+				vscode.window.showErrorMessage('Open Pixel Agents: Failed to read or parse layout file.');
+			}
+		}
 	}
 
 	private async bootstrapWebview(): Promise<void> {
@@ -805,6 +917,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	dispose() {
 		for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 		this.isDisposing = true;
+		void this.disposeBrowserOffice().catch(() => undefined);
 			this.rejectReady(new Error('Open Pixel Agents: The office is shutting down.'));
 			for (const pending of this.pendingSnapshots.values()) {
 				clearTimeout(pending.timer);
@@ -841,6 +954,34 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			}
 		}
 	}
+}
+
+
+const BROWSER_VIEW_MESSAGES = new Set(['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded', 'officeRepositories', 'existingAgents', 'agentCreated', 'agentClosed', 'runtimeSnapshot', 'agentRuntimeReplace', 'officeAgentPanel', 'officeAgentActionError', 'officeDeskState', 'officeAgentSeats']);
+const BROWSER_DESK_ACTIONS = new Set(['createWorker', 'createManager', 'startWorker', 'abortWorker', 'closeWorker', 'chatWorker', 'openAgentChats', 'editWorker', 'removeWorker', 'focusAttention', 'permission', 'question', 'rejectQuestion', 'dismissAttention', 'addAccount', 'connectAccount', 'renameAccount', 'disconnectAccount', 'removeAccount', 'addRepository', 'removeRepository', 'showSetup']);
+const publicText = (value: unknown, limit = 100): string | undefined => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, limit) : undefined;
+const publicObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const publicRows = (value: unknown, limit = 200): Record<string, unknown>[] => Array.isArray(value) ? value.slice(0, limit).map(publicObject) : [];
+
+/** Explicit fields prevent OpenCode URLs, repository paths and credentials entering the browser roster. */
+export function browserDeskState(input: unknown): Record<string, unknown> {
+ const state = publicObject(input);
+ return { ready: state.ready === true, error: publicText(state.error, 1000), setupNeeded: publicObject(state.setup).complete === false,
+  accounts: publicRows(state.accounts).map(account => ({ id: publicText(account.id), name: publicText(account.name), kind: publicText(account.kind), connected: account.connected === true, authType: publicText(account.authType), loginName: publicText(account.loginName, 160) })),
+  repositories: publicRows(state.repositories, 8).map(repo => ({ id: publicText(repo.id), name: publicText(repo.name), readOnly: repo.readOnly === true })),
+  attention: publicRows(state.attention).map(item => ({ id: publicText(item.id), workerId: publicText(item.workerId), workerName: publicText(item.workerName), kind: publicText(item.kind), ask: publicText(item.ask, 4000) })),
+  workers: publicRows(state.workers).map(item => { const worker = publicObject(item.definition), binding = publicObject(item.binding), manager = publicObject(worker.manager); return {
+   id: publicText(worker.id), name: publicText(worker.name), accountId: publicText(worker.accountId), providerId: publicText(worker.providerId), modelId: publicText(worker.modelId), role: publicText(worker.role) ?? 'builder', repoId: publicText(worker.repoId) ?? 'workspace', status: publicText(item.status), error: publicText(item.error, 1000), agentId: Number.isInteger(binding.agentId) && Number(binding.agentId) > 0 ? binding.agentId : undefined, manager: worker.role === 'manager', managerMode: publicText(manager.mode),
+  }; }),
+ };
+}
+export function browserDeskAction(input: Record<string, unknown>): Record<string, unknown> {
+ if (typeof input.action !== 'string' || !BROWSER_DESK_ACTIONS.has(input.action)) { throw new Error('This office action is not supported.'); }
+ const action: Record<string, unknown> = { action: input.action, browser: true };
+ if (input.id !== undefined) { if (typeof input.id !== 'string' || !input.id || input.id.length > 200 || /[\x00-\x1f\x7f]/.test(input.id)) { throw new Error('Choose an office item.'); } action.id = input.id; }
+ if (input.kind !== undefined) { if (!['codex', 'claude', 'grok'].includes(String(input.kind))) { throw new Error('Choose an office provider.'); } action.kind = input.kind; }
+ if (input.reply !== undefined) { if (!['once', 'always', 'reject'].includes(String(input.reply))) { throw new Error('Choose a permission reply.'); } action.reply = input.reply; }
+ return action;
 }
 
 export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): string {

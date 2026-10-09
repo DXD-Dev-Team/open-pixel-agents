@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPanelAction, AgentPanelState } from '../components/AgentPanel.js'
 import type { OfficeState } from '../office/engine/officeState.js'
-import { vscode } from '../vscodeApi.js'
+import { isBrowserOffice, officeConnection, vscode } from '../vscodeApi.js'
 
 interface PanelTarget { agentId: number; name: string; childName?: string }
 
@@ -14,6 +14,7 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
   const requestIndex = useRef(0)
   const submissions = useRef(new Map<number, { text: string; previousIds: Set<string> }>())
   const postAction = useCallback((agentId: number, action: AgentPanelAction) => {
+    if (isBrowserOffice && !officeConnection.getSnapshot().connected) return
     const requestId = `office-${Date.now()}-${++requestIndex.current}`
     vscode.postMessage({ type: 'officeAgentAction', agentId, requestId, ...action })
     setErrors(current => ({ ...current, [agentId]: '' }))
@@ -31,7 +32,14 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const message = event.data
-      if (message.type === 'officeAgentPanelOpen') open(message.agentId, false)
+      if (message.type === 'officeBrowserBootstrap' && isBrowserOffice) {
+        setStates({}); setErrors({}); submissions.current.clear()
+      }
+      if (message.type === 'existingAgents' && isBrowserOffice) {
+        const ids = new Set<number>(message.agents)
+        setTarget(current => current && !ids.has(current.agentId) ? null : current)
+      }
+      if (message.type === 'officeAgentPanelOpen' && !isBrowserOffice) open(message.agentId, false)
       if (message.type === 'officeAgentPanel') {
         const agentId = message.agentId as number
         const state = message.state as AgentPanelState

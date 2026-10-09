@@ -2,7 +2,7 @@
   "name": "office-pixel-agents",
   "displayName": "The Office \u2014 Pixel Agents",
   "description": "Local pixel office for OpenCode workers, with the Office Desk integration bridge.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "dxd-dev-team",
   "repository": {
     "type": "git",

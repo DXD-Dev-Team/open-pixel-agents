@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { SettingsModal } from './SettingsModal.js'
 import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js'
-import { vscode } from '../vscodeApi.js'
+import { isBrowserOffice, officeConnection, vscode } from '../vscodeApi.js'
 
 interface BottomToolbarProps {
   isEditMode: boolean
@@ -55,6 +55,7 @@ export function BottomToolbar({
   isDebugMode,
   onToggleDebugMode,
 }: BottomToolbarProps) {
+  const { connected } = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
   const [hovered, setHovered] = useState<string | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false)
@@ -76,6 +77,8 @@ export function BottomToolbar({
     <div style={panelStyle}>
       <div style={{ position: 'relative' }}>
         <button
+        disabled={isBrowserOffice && !connected}
+        title={isBrowserOffice ? 'Complete agent setup in VS Code' : undefined}
         onClick={handleOpenClick}
         onMouseEnter={() => setHovered('agent')}
         onMouseLeave={() => setHovered(null)}
@@ -122,7 +125,7 @@ export function BottomToolbar({
           </div>
         )}
       </div>
-      <button
+      {!isBrowserOffice && <button
         onClick={onToggleEditMode}
         onMouseEnter={() => setHovered('edit')}
         onMouseLeave={() => setHovered(null)}
@@ -137,8 +140,8 @@ export function BottomToolbar({
         title="Edit office layout"
       >
         Layout
-      </button>
-      <div style={{ position: 'relative' }}>
+      </button>}
+      {!isBrowserOffice && <div style={{ position: 'relative' }}>
         <button
           onClick={() => setIsSettingsOpen((v) => !v)}
           onMouseEnter={() => setHovered('settings')}
@@ -161,7 +164,7 @@ export function BottomToolbar({
           isDebugMode={isDebugMode}
           onToggleDebugMode={onToggleDebugMode}
         />
-      </div>
+      </div>}
     </div>
   )
 }

@@ -9,7 +9,7 @@ import { OFFICE_CANVAS_FLUSH_EVENT, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS } from '..
 import { setFloorSprites } from '../office/floorTiles.js'
 import { setWallSprites } from '../office/wallTiles.js'
 import { setCharacterTemplates } from '../office/sprites/spriteData.js'
-import { vscode } from '../vscodeApi.js'
+import { isBrowserOffice, vscode } from '../vscodeApi.js'
 import { playDoneSound, setSoundEnabled } from '../notificationSound.js'
 
 export interface SubagentCharacter {
@@ -176,6 +176,7 @@ function syncRuntimeAgent(
 }
 
 function saveAgentSeats(os: OfficeState): void {
+  if (isBrowserOffice) return
   const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {}
   for (const ch of os.characters.values()) {
     if (ch.isSubagent) continue
@@ -212,9 +213,32 @@ export function useExtensionMessages(
       const msg = e.data
       const os = getOfficeState()
 
+      if (msg.type === 'officeBrowserBootstrap' && isBrowserOffice) {
+        pendingAgents = []; pendingRuntime = null
+        layoutReadyRef.current = false
+        os.characters.clear(); os.subagentMeta.clear()
+        for (const seat of os.seats.values()) seat.assigned = false
+        setAgents([]); setAgentTools({}); setAgentStatuses({}); setSubagentTools({}); setSubagentCharacters([])
+        return
+      }
+      if (msg.type === 'officeAgentSeats' && isBrowserOffice) {
+        const seats = msg.seats as Record<string, { palette?: number; hueShift?: number; seatId?: string | null }>
+        for (const ch of os.characters.values()) {
+          if (ch.isSubagent) continue
+          const meta = seats[String(ch.id)]
+          if (!meta) continue
+          if (meta.palette !== undefined) ch.palette = meta.palette
+          if (meta.hueShift !== undefined) ch.hueShift = meta.hueShift
+          ch.seatId = meta.seatId ?? null
+          ch.path = []; ch.moveProgress = 0
+        }
+        os.rebuildFromLayout(os.getLayout())
+        return
+      }
+
       if (msg.type === 'officeRepositories') {
         os.configureRepositories(msg.repositories)
-        vscode.postMessage({ type: 'officeRepositoriesApplied', requestId: msg.requestId })
+        if (!isBrowserOffice) vscode.postMessage({ type: 'officeRepositoriesApplied', requestId: msg.requestId })
         saveAgentSeats(os)
         return
       }
