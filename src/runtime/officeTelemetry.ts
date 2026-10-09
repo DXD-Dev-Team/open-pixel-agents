@@ -1,3 +1,4 @@
+import { officeRole, managerScope } from '../agentControls.js';
 import type { AgentState } from '../types.js';
 import type { OfficeLabel, OfficePricing, OfficeSpeech, OfficeStatus, OfficeWorkerMetadata } from '../officeBridge.js';
 import type { RuntimeGlobalEvent, RuntimeMessage, RuntimeSessionSnapshot, RuntimeSessionStatus } from './runtimeAdapter.js';
@@ -50,7 +51,7 @@ function object(value: unknown): Record<string, unknown> {
 /** Copy only the non-secret public metadata fields into persistence. */
 export function normalizeOfficeMetadata(input: OfficeWorkerMetadata, previous: OfficeWorkerMetadata = {}): OfficeWorkerMetadata {
 	const result: OfficeWorkerMetadata = { ...previous };
-	for (const key of ['workerId', 'name', 'providerId', 'modelId', 'accountId'] as const) {
+	for (const key of ['workerId', 'name', 'providerId', 'modelId', 'accountId', 'repoId', 'repoName'] as const) {
 		if (input[key] === undefined) {
 			continue;
 		}
@@ -60,6 +61,12 @@ export function normalizeOfficeMetadata(input: OfficeWorkerMetadata, previous: O
 		}
 		result[key] = value.trim();
 	}
+	if (input.role !== undefined) { result.role = officeRole(input.role); }
+	if (input.managerRepoIds !== undefined) {
+		if (!Array.isArray(input.managerRepoIds) || input.managerRepoIds.length > 8 || input.managerRepoIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 200 || /[\r\n\0]/.test(id))) { throw new Error('The manager repository assignments are invalid.'); }
+		result.managerRepoIds = [...new Set(input.managerRepoIds)];
+	}
+	if (input.managerForRole !== undefined) { result.managerForRole = managerScope(input.managerForRole); }
 	if (input.providerKind !== undefined) {
 		if (!['claude', 'codex', 'grok'].includes(input.providerKind)) {
 			throw new Error('Open Pixel Agents: Invalid provider kind.');
@@ -391,7 +398,7 @@ export class OfficeTelemetry {
 		}
 		const status = statuses.sort((a, b) => statusOrder.indexOf(a) - statusOrder.indexOf(b))[0];
 		const label: OfficeLabel = { name: metadata.name ?? agent?.displayName ?? `Agent ${record.agentId}`,
-			status, providerKind: metadata.providerKind, needsInput: status === 'needs input', managed: agent?.readOnly === true };
+			status, role: metadata.role ?? 'builder', managerForRole: metadata.managerForRole, repoId: metadata.repoId, repoName: metadata.repoName, managerRepoIds: metadata.managerRepoIds, providerKind: metadata.providerKind, needsInput: status === 'needs input', managed: agent?.readOnly === true };
 		if (record.speech && record.speech.expiresAt > Date.now()) { label.speech = { ...record.speech }; }
 		if (metadata.providerKind === 'codex') {
 			const items = [...record.completed.values()];

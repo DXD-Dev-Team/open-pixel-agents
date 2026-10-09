@@ -1,5 +1,5 @@
 import { TileType, FurnitureType, DEFAULT_COLS, DEFAULT_ROWS, TILE_SIZE, Direction } from '../types.js'
-import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, Seat, FurnitureInstance, FloorColor } from '../types.js'
+import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, Seat, FurnitureInstance, FloorColor, OfficeZone, OfficeRepository } from '../types.js'
 import { getCatalogEntry } from './furnitureCatalog.js'
 import { getColorizedSprite } from '../colorize.js'
 
@@ -144,7 +144,7 @@ function getAdjacentDeskFacing(tileCol: number, tileRow: number, deskTiles: Set<
 
 /** Generate seats from chair furniture.
  *  Facing priority: 1) adjacent desk/work surface, 2) chair orientation, 3) forward (DOWN). */
-export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
+export function layoutToSeats(furniture: PlacedFurniture[], zones?: OfficeZone[]): Map<string, Seat> {
   const seats = new Map<string, Seat>()
 
   // Build set of all desk tiles
@@ -205,6 +205,8 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
           facingDir,
           isWorkSeat,
           computerDeskId,
+          repoId: zones?.find(zone => tileCol >= zone.col && tileCol < zone.col + zone.width && tileRow >= zone.row && tileRow < zone.row + zone.height)?.repoId,
+          role: zones?.find(zone => tileCol >= zone.col && tileCol < zone.col + zone.width && tileRow >= zone.row && tileRow < zone.row + zone.height)?.role,
           assigned: false,
         })
         seatCount++
@@ -245,6 +247,8 @@ export function createDefaultLayout(): OfficeLayout {
     for (let c = 0; c < DEFAULT_COLS; c++) {
       if (r === 0 || r === DEFAULT_ROWS - 1) { tiles.push(W); tileColors.push(null); continue }
       if (c === 0 || c === DEFAULT_COLS - 1) { tiles.push(W); tileColors.push(null); continue }
+      // Separate the three review/management rooms below the Build area.
+      if (r === 17 && ![3, 14, 25].includes(c) || r > 17 && (c === 11 || c === 22)) { tiles.push(W); tileColors.push(null); continue }
       if (c === 10) {
         if (r >= 4 && r <= 6) {
           tiles.push(F4); tileColors.push(DEFAULT_DOORWAY_COLOR)
@@ -282,7 +286,29 @@ export function createDefaultLayout(): OfficeLayout {
     }
   }
 
-  return { version: 1, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, tiles, tileColors, furniture }
+  return { version: 1, officeDefault: true, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, tiles, tileColors, furniture, zones: [
+    { role: 'builder', label: 'BUILD', col: 1, row: 1, width: 30, height: 16 },
+    { role: 'security-reviewer', label: 'SECURITY', col: 1, row: 17, width: 10, height: 16 },
+    { role: 'verifier', label: 'VERIFICATION', col: 12, row: 17, width: 10, height: 16 },
+    { role: 'manager', label: 'MANAGEMENT', col: 23, row: 17, width: 8, height: 16 },
+  ] }
+}
+
+
+/** Repeat the existing office art; each repository owns its role desks. */
+export function createRepositoryLayout(repositories: OfficeRepository[]): OfficeLayout {
+  if (!repositories.length) return createDefaultLayout()
+  const room = createDefaultLayout()
+  const cols = room.cols * repositories.length
+  const tiles: OfficeLayout['tiles'] = []
+  const tileColors: NonNullable<OfficeLayout['tileColors']> = []
+  for (let row = 0; row < room.rows; row++) for (let index = 0; index < repositories.length; index++) for (let col = 0; col < room.cols; col++) {
+    tiles.push(room.tiles[row * room.cols + col])
+    tileColors.push(room.tileColors?.[row * room.cols + col] ?? null)
+  }
+  return { ...room, cols, tiles, tileColors,
+    furniture: repositories.flatMap((repo, index) => room.furniture.map(item => ({ ...item, uid: index ? `${repo.id}:${item.uid}` : item.uid, col: item.col + index * room.cols }))),
+    zones: repositories.flatMap((repo, index) => (room.zones ?? []).map(zone => ({ ...zone, repoId: repo.id, repoName: repo.name, label: zone.label, col: zone.col + index * room.cols }))) }
 }
 
 /** Serialize layout to JSON string */

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentState } from './types.js';
 import type { AgentLaunchOptions } from './agentManager.js';
-import type { OfficeAgentBinding, OfficeAgentInput, OfficeBridgeEvent, OfficeServerConnection, OfficeVisualSnapshot, OfficeWorkerMetadata } from './officeBridge.js';
+import type { OfficeAgentBinding, OfficeAgentInput, OfficeBridgeEvent, OfficeServerConnection, OfficeVisualSnapshot, OfficeWorkerMetadata, OfficeAgentPanelState, OfficeRole, OfficeRepository } from './officeBridge.js';
 import {
 	launchNewTerminal,
 	removeAgent,
@@ -22,6 +22,7 @@ import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { OpenCodeRuntimeAdapter } from './runtime/openCodeRuntimeAdapter.js';
 import { getOpenCodeEnvironment, isOfficeDeskManaged, resetOpenCodeServerTerminal } from './opencodeClient.js';
 import { RuntimeController } from './runtime/runtimeController.js';
+import { normalizeAgentAction, normalizeAgentPanel, officeRepositories } from './agentControls.js';
 import { normalizeOfficeMetadata } from './runtime/officeTelemetry.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
@@ -52,6 +53,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	private snapshotIndex = 0;
 	private readonly pendingSnapshots = new Map<number, { resolve: (snapshot: OfficeVisualSnapshot) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingCapacity = new Map<number, { resolve: (seatId: string | null) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingRoleApplies = new Map<number, { resolve: (applied: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private metadataTail: Promise<unknown> = Promise.resolve();
+	private repositories: OfficeRepository[] = [];
+	private readonly pendingRepositories = new Map<number, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly panelStates = new Map<number, OfficeAgentPanelState>();
 	private managedCreateTail: Promise<unknown> = Promise.resolve();
 	private viewListeners: vscode.Disposable[] = [];
 
@@ -83,6 +89,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private removeAgentUi(agentId: number, shouldPersist: boolean): void {
+		this.panelStates.delete(agentId);
 		this.removeAgentSeatMeta(agentId);
 		removeAgent(
 			agentId, this.agents,
@@ -135,6 +142,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 	async getServerConnection(): Promise<OfficeServerConnection> {
 		await this.ensureReady();
+		if (isOfficeDeskManaged()) {
+			const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+			if (!workspaceRoot) { throw new Error('Open a local workspace to use the office.'); }
+			await this.runtime.ensureServer(workspaceRoot, this.output);
+		}
 		const port = this.runtime.getServerPort();
 		if (port === null) {
 			throw new Error('Open Pixel Agents: The window server has no resolved port.');
@@ -180,7 +192,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		return operation;
 	}
 
-	private async reserveComputerDesk(requestId: number): Promise<string | null> {
+	private async reserveComputerDesk(requestId: number, role?: OfficeRole, agentId?: number, repoId?: string): Promise<string | null> {
 		return new Promise<string | null>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pendingCapacity.delete(requestId);
@@ -188,7 +200,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				reject(new Error('The office did not acknowledge its available computer desks.'));
 			}, OFFICE_SNAPSHOT_TIMEOUT_MS);
 			this.pendingCapacity.set(requestId, { resolve, reject, timer });
-			void this.webview?.postMessage({ type: 'officeSeatCapacityRequest', requestId });
+			void this.webview?.postMessage({ type: 'officeSeatCapacityRequest', requestId, role, agentId, repoId });
 		});
 	}
 
@@ -201,14 +213,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		if (!cwd || !path.isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) {
 			throw new Error('Open Pixel Agents: An existing absolute workspace directory is required.');
 		}
-		const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-		if (!workspaceRoot || fs.realpathSync(cwd) !== fs.realpathSync(workspaceRoot)) {
-			throw new Error('Open Pixel Agents: The bridge spike requires the window server workspace directory.');
-		}
 		await this.ensureReady();
 		const metadata = input.metadata ? normalizeOfficeMetadata(input.metadata) : undefined;
+		if (this.repositories.length && (!metadata?.repoId || !this.repositories.some(repo => repo.id === metadata.repoId))) { throw new Error('Choose one of the configured office repositories.'); }
 		const reservationId = ++this.snapshotIndex;
-		if (!await this.reserveComputerDesk(reservationId)) {
+		if (!await this.reserveComputerDesk(reservationId, this.metadataSeatRole(metadata), undefined, metadata?.repoId)) {
 			throw new Error('Add an available chair facing a desk with a computer in the office Layout editor before starting another worker.');
 		}
 		let agent: AgentState | undefined;
@@ -226,18 +235,96 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		return binding;
 	}
 
-	async setManagedMetadata(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
+	private persistAgentMetadata(agentId: number, metadata: OfficeWorkerMetadata): PromiseLike<void> {
+		const agent = this.agents.get(agentId);
+		if (!agent) { throw new Error('The worker is no longer available.'); }
+		const snapshot = new Map(this.agents);
+		snapshot.set(agentId, { ...agent, officeMetadata: metadata });
+		return persistAgents(snapshot, this.context);
+	}
+
+	private metadataSeatRole(metadata?: OfficeWorkerMetadata): OfficeRole {
+		return metadata?.role === 'manager' && metadata.managerForRole && metadata.managerForRole !== 'all' ? metadata.managerForRole : metadata?.role ?? 'builder';
+	}
+
+	setManagedMetadata(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
+		const operation = this.metadataTail.then(() => this.setManagedMetadataNow(agentId, patch));
+		this.metadataTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private async setManagedMetadataNow(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
 		await this.ensureReady(false);
 		const agent = this.agents.get(agentId);
-		if (!agent?.readOnly) {
-			throw new Error('Open Pixel Agents: No managed agent exists with this id.');
+		if (!agent?.readOnly) { throw new Error('Open Pixel Agents: No managed agent exists with this id.'); }
+		const previous = agent.officeMetadata;
+		const metadata = normalizeOfficeMetadata(patch, previous);
+		const roleChanged = (metadata.role ?? 'builder') !== (previous?.role ?? 'builder') || metadata.managerForRole !== previous?.managerForRole || metadata.repoId !== previous?.repoId;
+		let reservationId: number | undefined;
+		if (roleChanged) {
+			reservationId = ++this.snapshotIndex;
+			if (!await this.reserveComputerDesk(reservationId, this.metadataSeatRole(metadata), agentId, metadata.repoId)) {
+				throw new Error('This role area has no available computer desk. Add a desk there before changing the role.');
+			}
 		}
-		agent.officeMetadata = normalizeOfficeMetadata(patch, agent.officeMetadata);
-		this.controller.updateMetadata(agentId, patch);
-		await this.persistAgents();
+		try {
+			// Persist before moving the character or publishing metadata. A failed
+			// workspace write leaves both the visible role and companion role intact.
+			await this.persistAgentMetadata(agentId, metadata);
+			if (reservationId !== undefined) {
+				const applied = await new Promise<boolean>((resolve, reject) => {
+					const timer = setTimeout(() => {
+						this.pendingRoleApplies.delete(reservationId!);
+						reject(new Error('The office did not acknowledge the role desk change.'));
+					}, OFFICE_SNAPSHOT_TIMEOUT_MS);
+					this.pendingRoleApplies.set(reservationId!, { resolve, reject, timer });
+					void this.webview?.postMessage({ type: 'officeRoleSeatApply', agentId, requestId: reservationId, role: metadata.role ?? 'builder', managerForRole: metadata.managerForRole, repoId: metadata.repoId, repoName: metadata.repoName });
+				});
+				if (!applied) { throw new Error('The worker or reserved role desk is no longer available.'); }
+				void this.webview?.postMessage({ type: 'officeRoleSeatFinish', requestId: reservationId, commit: true });
+			}
+		} catch (error) {
+			agent.officeMetadata = previous;
+			if (reservationId !== undefined) { void this.webview?.postMessage({ type: 'officeRoleSeatFinish', requestId: reservationId, commit: false }); }
+			await this.persistAgents();
+			throw error;
+		} finally {
+			if (reservationId !== undefined) { void this.webview?.postMessage({ type: 'officeSeatRelease', requestId: reservationId }); }
+		}
+		if (this.agents.get(agentId) !== agent) { throw new Error('The worker is no longer available.'); }
+		agent.officeMetadata = metadata;
+		this.controller.updateMetadata(agentId, metadata);
 		const binding = this.managedBinding(agent);
 		this.bridgeEvents.fire({ type: 'changed', agentId, binding });
 		return binding;
+	}
+
+	async setRepositories(input: OfficeRepository[]): Promise<void> {
+		const repositories = officeRepositories(input);
+		await this.ensureReady(false);
+		const requestId = ++this.snapshotIndex;
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => { this.pendingRepositories.delete(requestId); reject(new Error('The office did not acknowledge its repository areas.')); }, OFFICE_SNAPSHOT_TIMEOUT_MS);
+			this.pendingRepositories.set(requestId, { resolve, reject, timer });
+			void this.webview?.postMessage({ type: 'officeRepositories', repositories, requestId });
+		});
+		this.repositories = repositories;
+	}
+
+	async setAgentPanelState(agentId: number, state: unknown): Promise<void> {
+		await this.ensureReady(false);
+		if (!this.agents.get(agentId)?.readOnly) { throw new Error('There is no managed worker for these controls.'); }
+		const normalized = normalizeAgentPanel(state);
+		this.panelStates.set(agentId, normalized);
+		void this.webview?.postMessage({ type: 'officeAgentPanel', agentId, state: normalized });
+	}
+
+	async openAgentPanel(agentId: number): Promise<void> {
+		await this.ensureReady();
+		if (!this.agents.get(agentId)?.readOnly) { throw new Error('There is no managed worker for these controls.'); }
+		void this.webview?.postMessage({ type: 'officeAgentPanelOpen', agentId });
+		const state = this.panelStates.get(agentId);
+		if (state) { void this.webview?.postMessage({ type: 'officeAgentPanel', agentId, state }); }
 	}
 
 	async getVisualSnapshot(): Promise<OfficeVisualSnapshot> {
@@ -284,7 +371,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			return;
 		}
 		if (agent.sessionId) {
-			await this.runtime.deleteSession(agent.sessionId);
+			await this.runtime.deleteSession(agent.sessionId, agent.projectDir);
 		}
 		if (!this.agents.has(agentId)) {
 			await this.persistAgents();
@@ -324,11 +411,29 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		}));
 
 		this.viewListeners.push(webviewView.webview.onDidReceiveMessage(async (message) => {
-			if (message.type === 'openAgentSession') {
+			if (message.type === 'officeAgentAction') {
+				try {
+					const action = normalizeAgentAction(message);
+					if (!this.agents.get(action.agentId)?.readOnly) { throw new Error('Only managed workers have these controls.'); }
+					this.bridgeEvents.fire(action);
+				} catch (error) {
+					void this.webview?.postMessage({ type: 'officeAgentActionError', agentId: message.agentId, error: error instanceof Error ? error.message : 'The agent action failed.' });
+				}
+			} else if (message.type === 'openAgentSession') {
 				if (isOfficeDeskManaged()) {
 					await vscode.commands.executeCommand('office-desk.createWorker');
 				} else {
 					await this.createAgent(message.folderPath as string | undefined);
+				}
+			} else if (message.type === 'officeRepositoriesApplied') {
+				const pending = this.pendingRepositories.get(message.requestId as number);
+				if (pending) { this.pendingRepositories.delete(message.requestId as number); clearTimeout(pending.timer); pending.resolve(); }
+			} else if (message.type === 'officeRoleSeatApplied') {
+				const pending = this.pendingRoleApplies.get(message.requestId as number);
+				if (pending) {
+					this.pendingRoleApplies.delete(message.requestId as number);
+					clearTimeout(pending.timer);
+					pending.resolve(message.applied === true);
 				}
 			} else if (message.type === 'officeSeatCapacity') {
 				const pending = this.pendingCapacity.get(message.requestId as number);
@@ -534,6 +639,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 		// Restored characters are buffered by the webview until layoutLoaded.
 		// Queue them before assets/layout so the initial layout can spawn them.
+		if (this.repositories.length) { void this.webview?.postMessage({ type: 'officeRepositories', requestId: 0, repositories: this.repositories }); }
 		sendExistingAgents(this.agents, this.context, this.webview);
 		const projectDir = getProjectDirPath();
 		console.log('[Extension] workspaceRoot:', workspaceRoot);
@@ -710,6 +816,10 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				pending.reject(new Error('The office is shutting down.'));
 			}
 			this.pendingCapacity.clear();
+			for (const pending of this.pendingRoleApplies.values()) { clearTimeout(pending.timer); pending.reject(new Error('The office is shutting down.')); }
+			this.pendingRoleApplies.clear();
+			for (const pending of this.pendingRepositories.values()) { clearTimeout(pending.timer); pending.reject(new Error('The office is shutting down.')); }
+			this.pendingRepositories.clear();
 			this.bridgeEvents.dispose();
 		this.runtimeEvents?.dispose();
 		this.runtimeEvents = null;

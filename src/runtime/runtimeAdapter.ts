@@ -69,17 +69,17 @@ export interface RuntimeAdapter {
 	readonly id: string;
 	ensureServer(cwd: string, output?: vscode.OutputChannel, preferredPort?: number): Promise<void>;
 	getServerPort(): number | null;
-	createSession(title?: string): Promise<RuntimeSession>;
-	getSession(sessionId: string): Promise<RuntimeSession>;
-	deleteSession(sessionId: string): Promise<void>;
+	createSession(title?: string, cwd?: string): Promise<RuntimeSession>;
+	getSession(sessionId: string, cwd?: string): Promise<RuntimeSession>;
+	deleteSession(sessionId: string, cwd?: string): Promise<void>;
 	buildAttachCommand(sessionId: string, cwd?: string): string;
 	subscribeToEvents(
 		onEvent: (event: RuntimeGlobalEvent) => void,
 		onError?: (error: unknown) => void,
 	): { dispose(): void };
-	getSessionStatuses(): Promise<Record<string, RuntimeSessionStatus>>;
-	getSessionMessages(sessionId: string): Promise<RuntimeMessage[]>;
-	getSessionChildren(sessionId: string): Promise<RuntimeSession[]>;
-	getSessionSnapshot(sessionId: string): Promise<RuntimeSessionSnapshot>;
-	getPendingInputEvents?(): Promise<RuntimeGlobalEvent[]>;
+	getSessionStatuses(cwd?: string): Promise<Record<string, RuntimeSessionStatus>>;
+	getSessionMessages(sessionId: string, cwd?: string): Promise<RuntimeMessage[]>;
+	getSessionChildren(sessionId: string, cwd?: string): Promise<RuntimeSession[]>;
+	getSessionSnapshot(sessionId: string, cwd?: string): Promise<RuntimeSessionSnapshot>;
+	getPendingInputEvents?(cwd?: string): Promise<RuntimeGlobalEvent[]>;
 }

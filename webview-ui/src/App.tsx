@@ -13,6 +13,8 @@ import { useEditorActions } from './hooks/useEditorActions.js'
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js'
 import { ZoomControls } from './components/ZoomControls.js'
 import { BottomToolbar } from './components/BottomToolbar.js'
+import { AgentPanel } from './components/AgentPanel.js'
+import { useAgentPanel } from './hooks/useAgentPanel.js'
 import { DebugView } from './components/DebugView.js'
 
 // Game state lives outside React — updated imperatively by message handlers
@@ -122,6 +124,7 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
 }
 
 function App() {
+  const panel = useAgentPanel(getOfficeState)
   const editor = useEditorActions(getOfficeState, editorState)
 
   const isEditDirty = useCallback(() => editor.isEditMode && editor.isDirty, [editor.isEditMode, editor.isDirty])
@@ -156,12 +159,13 @@ function App() {
   }, [])
 
   const handleClick = useCallback((agentId: number) => {
-    // If clicked agent is a sub-agent, focus the parent's terminal instead
+    if (panel.open(agentId)) return
+    // Standalone agents retain their terminal focus behavior.
     const os = getOfficeState()
     const meta = os.subagentMeta.get(agentId)
     const focusId = meta ? meta.parentAgentId : agentId
     vscode.postMessage({ type: 'focusAgent', id: focusId })
-  }, [])
+  }, [panel.open])
 
   const officeState = getOfficeState()
 
@@ -302,6 +306,8 @@ function App() {
         panRef={editor.panRef}
         onCloseAgent={handleCloseAgent}
       />
+
+      {panel.target && <AgentPanel {...panel.target} state={panel.state} error={panel.error} draft={panel.draft} onDraftChange={panel.setDraft} onAction={panel.action} onClose={panel.close} />}
 
       {isDebugMode && (
         <DebugView

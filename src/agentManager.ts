@@ -88,7 +88,7 @@ export async function launchNewTerminal(
 	await runtime.ensureServer(cwd, output);
 	const serverPort = runtime.getServerPort() ?? undefined;
 	const title = getAgentSessionTitle(cwd, idx);
-	const session = await runtime.createSession(title);
+	const session = await runtime.createSession(title, cwd);
 	let terminal: vscode.Terminal;
 	try {
 		if (options?.readOnly) {
@@ -100,7 +100,7 @@ export async function launchNewTerminal(
 			terminal = vscode.window.createTerminal({ name: getAgentTerminalName(cwd, idx), cwd });
 		}
 	} catch (error) {
-		await runtime.deleteSession(session.id).catch(() => undefined);
+		await runtime.deleteSession(session.id, cwd).catch(() => undefined);
 		throw error;
 	}
 	terminal.show(true);
@@ -126,7 +126,7 @@ export async function launchNewTerminal(
 	activeAgentIdRef.current = id;
 	persistAgents();
 	console.log(`[Open Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
-	webview?.postMessage({ type: 'agentCreated', id, ...(options?.readOnly ? { managed: true, reservationId: options.reservationId } : {}) });
+	webview?.postMessage({ type: 'agentCreated', id, ...(options?.readOnly ? { managed: true, reservationId: options.reservationId, role: options.metadata?.role ?? 'builder', managerForRole: options.metadata?.managerForRole, repoId: options.metadata?.repoId, repoName: options.metadata?.repoName } : {}) });
 	return agent;
 }
 
@@ -204,7 +204,7 @@ export async function restoreAgents(
 		}
 
 		try {
-			await runtime.getSession(p.sessionId);
+			await runtime.getSession(p.sessionId, p.projectDir);
 		} catch (error) {
 			output?.appendLine(`[Open Pixel Agents] Removing stale persisted agent ${p.id}; session ${p.sessionId} is unavailable: ${String(error)}`);
 			continue;

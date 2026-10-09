@@ -5,6 +5,12 @@ export const OFFICE_BRIDGE_READY_TIMEOUT_MS = 45_000;
 export const OFFICE_SNAPSHOT_TIMEOUT_MS = 10_000;
 export const OFFICE_SPEECH_DURATION_MS = 8_000;
 export const OFFICE_SPEECH_MAX_LENGTH = 96;
+export const OFFICE_ROLES = ['builder', 'security-reviewer', 'verifier', 'manager'] as const;
+export const OFFICE_MANAGER_MODES = ['auto', 'human-approval'] as const;
+export const OFFICE_AGENT_ACTIONS = ['open', 'send', 'start', 'stop', 'close', 'role', 'manager-mode', 'assign-team', 'approve', 'reject', 'attention', 'sign-in', 'change-account', 'add-account', 'manager-repos', 'manager-scope'] as const;
+export const OFFICE_PANEL_CHAT_LIMIT = 50;
+export const OFFICE_PANEL_TEAM_LIMIT = 100;
+export const OFFICE_PANEL_TEXT_LIMIT = 20_000;
 export const OFFICE_STATUS_PRECEDENCE = ['needs input', 'failed', 'working', 'reading', 'waiting', 'done', 'idle'] as const;
 export const OFFICE_READING_TOOLS = ['read', 'grep', 'glob', 'webfetch', 'websearch', 'list', 'ls'] as const;
 

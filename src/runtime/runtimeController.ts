@@ -42,14 +42,16 @@ export class RuntimeController {
 			if (!agent.sessionId) {
 				return;
 			}
-			const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId);
+			const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId, agent.projectDir);
 			replaceAgentSnapshot(this.store, agent, snapshot);
 			this.office.hydrate(agent, snapshot);
 		}));
 		if (this.runtime.getPendingInputEvents) {
-			for (const event of await this.runtime.getPendingInputEvents()) {
-				applyRuntimeEvent(this.store, event);
-				this.office.handleEvent(event);
+			for (const directory of new Set(agents.map(agent => agent.projectDir))) {
+				for (const event of await this.runtime.getPendingInputEvents(directory)) {
+					applyRuntimeEvent(this.store, event);
+					this.office.handleEvent(event);
+				}
 			}
 		}
 		this.store.phase = 'live';

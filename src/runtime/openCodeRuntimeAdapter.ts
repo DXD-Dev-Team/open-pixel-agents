@@ -32,16 +32,16 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 		return getCurrentOpenCodeServerPort();
 	}
 
-	async createSession(title?: string): Promise<RuntimeSession> {
-		return createOpenCodeSession(title);
+	async createSession(title?: string, cwd?: string): Promise<RuntimeSession> {
+		return createOpenCodeSession(title, cwd);
 	}
 
-	async getSession(sessionId: string): Promise<RuntimeSession> {
-		return getOpenCodeSession(sessionId);
+	async getSession(sessionId: string, cwd?: string): Promise<RuntimeSession> {
+		return getOpenCodeSession(sessionId, cwd);
 	}
 
-	async deleteSession(sessionId: string): Promise<void> {
-		await deleteOpenCodeSession(sessionId);
+	async deleteSession(sessionId: string, cwd?: string): Promise<void> {
+		await deleteOpenCodeSession(sessionId, cwd);
 	}
 
 	buildAttachCommand(sessionId: string, cwd?: string): string {
@@ -55,28 +55,28 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 		return subscribeToOpenCodeEvents(onEvent, onError);
 	}
 
-	async getSessionStatuses(): Promise<Record<string, RuntimeSessionStatus>> {
-		return getOpenCodeSessionStatuses();
+	async getSessionStatuses(cwd?: string): Promise<Record<string, RuntimeSessionStatus>> {
+		return getOpenCodeSessionStatuses(cwd);
 	}
 
-	async getSessionMessages(sessionId: string): Promise<RuntimeMessage[]> {
-		return getOpenCodeSessionMessages(sessionId);
+	async getSessionMessages(sessionId: string, cwd?: string): Promise<RuntimeMessage[]> {
+		return getOpenCodeSessionMessages(sessionId, cwd);
 	}
 
-	async getSessionChildren(sessionId: string): Promise<RuntimeSession[]> {
-		return getOpenCodeSessionChildren(sessionId);
+	async getSessionChildren(sessionId: string, cwd?: string): Promise<RuntimeSession[]> {
+		return getOpenCodeSessionChildren(sessionId, cwd);
 	}
 
-	async getSessionSnapshot(sessionId: string): Promise<RuntimeSessionSnapshot> {
-		const statuses = await this.getSessionStatuses();
+	async getSessionSnapshot(sessionId: string, cwd?: string): Promise<RuntimeSessionSnapshot> {
+		const statuses = await this.getSessionStatuses(cwd);
 		const [messages, childSessions] = await Promise.all([
-			this.getSessionMessages(sessionId),
-			this.getSessionChildren(sessionId),
+			this.getSessionMessages(sessionId, cwd),
+			this.getSessionChildren(sessionId, cwd),
 		]);
 		const children = await Promise.all(childSessions.map(async (child) => ({
 			info: child,
 			status: statuses[child.id],
-			messages: await this.getSessionMessages(child.id),
+			messages: await this.getSessionMessages(child.id, cwd),
 		})));
 		return {
 			sessionId,
@@ -86,13 +86,13 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 		};
 	}
 
-	async getPendingInputEvents(): Promise<RuntimeGlobalEvent[]> {
+	async getPendingInputEvents(cwd?: string): Promise<RuntimeGlobalEvent[]> {
 		const port = this.getServerPort();
 		if (port === null) {
 			return [];
 		}
 		const env = getOpenCodeEnvironment();
-		const headers: Record<string, string> = { accept: 'application/json' };
+		const headers: Record<string, string> = { accept: 'application/json', ...(cwd ? { 'x-opencode-directory': encodeURIComponent(cwd) } : {}) };
 		if (env.OPENCODE_SERVER_PASSWORD) {
 			headers.authorization = `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME || 'opencode'}:${env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`;
 		}
@@ -102,7 +102,7 @@ export class OpenCodeRuntimeAdapter implements RuntimeAdapter {
 				throw new Error(`OpenCode pending ${kind} request failed (${response.status}).`);
 			}
 			const records = await response.json() as Record<string, unknown>[];
-			return records.map((properties): RuntimeGlobalEvent => ({ directory: '', payload: { type: `${kind}.asked`, properties } }));
+			return records.map((properties): RuntimeGlobalEvent => ({ directory: cwd ?? '', payload: { type: `${kind}.asked`, properties } }));
 		}));
 		return lists.flat();
 	}

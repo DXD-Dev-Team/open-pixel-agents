@@ -212,8 +212,24 @@ export function useExtensionMessages(
       const msg = e.data
       const os = getOfficeState()
 
+      if (msg.type === 'officeRepositories') {
+        os.configureRepositories(msg.repositories)
+        vscode.postMessage({ type: 'officeRepositoriesApplied', requestId: msg.requestId })
+        saveAgentSeats(os)
+        return
+      }
       if (msg.type === 'officeSeatCapacityRequest') {
-        vscode.postMessage({ type: 'officeSeatCapacity', requestId: msg.requestId, seatId: os.reserveComputerDesk(msg.requestId) })
+        vscode.postMessage({ type: 'officeSeatCapacity', requestId: msg.requestId, seatId: os.reserveComputerDesk(msg.requestId, msg.role, msg.agentId, msg.repoId) })
+        return
+      }
+      if (msg.type === 'officeRoleSeatApply') {
+        const applied = os.applyRoleSeat(msg.agentId, msg.requestId, msg.role, msg.managerForRole, msg.repoId, msg.repoName)
+        vscode.postMessage({ type: 'officeRoleSeatApplied', requestId: msg.requestId, applied })
+        return
+      }
+      if (msg.type === 'officeRoleSeatFinish') {
+        os.finishRoleSeat(msg.requestId, msg.commit === true)
+        saveAgentSeats(os)
         return
       }
       if (msg.type === 'officeSeatRelease') {
@@ -266,6 +282,7 @@ export function useExtensionMessages(
         }
         if (layout) {
           os.rebuildFromLayout(layout)
+          if (layout.officeDefault && os.repositories.length) os.configureRepositories(os.repositories)
           onLayoutLoaded?.(layout)
         } else {
           // Default layout — snapshot whatever OfficeState built
@@ -291,7 +308,7 @@ export function useExtensionMessages(
         const id = msg.id as number
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
         setSelectedAgent(id)
-        os.addAgent(id, undefined, undefined, undefined, undefined, msg.managed === true, msg.reservationId)
+        os.addAgent(id, undefined, undefined, undefined, undefined, msg.managed === true, msg.reservationId, msg.role, msg.managerForRole, msg.repoId, msg.repoName)
         saveAgentSeats(os)
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number

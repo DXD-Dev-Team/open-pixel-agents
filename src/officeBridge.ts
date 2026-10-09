@@ -6,6 +6,44 @@ import type { RuntimeGlobalEvent } from './runtime/runtimeAdapter.js';
 
 export type OfficeStatus = 'needs input' | 'failed' | 'working' | 'reading' | 'waiting' | 'done' | 'idle';
 export type OfficeProviderKind = 'claude' | 'codex' | 'grok';
+export type OfficeRole = 'builder' | 'security-reviewer' | 'verifier' | 'manager';
+export type OfficeManagerScope = 'all' | 'builder' | 'security-reviewer' | 'verifier';
+export type OfficeManagerMode = 'auto' | 'human-approval';
+export type OfficeAgentActionName = 'open' | 'send' | 'start' | 'stop' | 'close' | 'role' | 'manager-mode' | 'assign-team' | 'approve' | 'reject' | 'attention' | 'sign-in' | 'change-account' | 'add-account' | 'manager-repos' | 'manager-scope';
+
+export interface OfficeAgentAction {
+	type: 'agent-action';
+	agentId: number;
+	requestId: string;
+	action: OfficeAgentActionName;
+	text?: string;
+	role?: OfficeRole;
+	mode?: OfficeManagerMode;
+	teamIds?: string[];
+	proposalId?: string;
+	accountId?: string;
+	kind?: OfficeProviderKind;
+	repoIds?: string[];
+	scopeRole?: OfficeManagerScope;
+}
+
+export interface OfficeRepository { id: string; name: string }
+
+export interface OfficePanelAccount { id: string; name: string; kind: OfficeProviderKind; connected: boolean; authType?: string; loginName?: string }
+
+export interface OfficeAgentPanelState {
+	worker: { id: string; name: string; role: OfficeRole; status: OfficeStatus; started: boolean; repoId?: string; repoName?: string; providerKind?: OfficeProviderKind; modelId?: string; accountId?: string };
+	chat: Array<{ id: string; role: 'user' | 'assistant'; text: string; createdAt: number }>;
+	pending: boolean;
+	busy: boolean;
+	error?: string;
+	account?: OfficePanelAccount;
+	accounts?: OfficePanelAccount[];
+	repositories?: OfficeRepository[];
+	attention?: Array<{ id: string; kind: 'permission' | 'question'; ask: string }>;
+	manager?: { mode: OfficeManagerMode; scopeRole?: OfficeManagerScope; repoIds?: string[]; teamIds: string[]; team: Array<{ id: string; name: string; role: OfficeRole }>; paused?: boolean; triaging?: boolean; coordinating?: boolean; executing?: boolean; error?: string;
+		proposals: Array<{ id: string; text: string; workerId?: string; workerName?: string; status: 'pending' | 'approved' | 'rejected' | 'running' | 'done' | 'failed'; error?: string }> };
+}
 
 export interface OfficePricing {
 	providerId: string;
@@ -29,6 +67,11 @@ export interface OfficeWorkerMetadata {
 	usageTokens?: number;
 	estimatedCost?: number;
 	pricing?: OfficePricing;
+	role?: OfficeRole;
+	managerForRole?: OfficeManagerScope;
+	repoId?: string;
+	repoName?: string;
+	managerRepoIds?: string[];
 }
 
 export interface OfficeSpeech {
@@ -46,6 +89,11 @@ export interface OfficeLabel {
 	needsInput: boolean;
 	managed?: boolean;
 	speech?: OfficeSpeech;
+	role?: OfficeRole;
+	managerForRole?: OfficeManagerScope;
+	repoId?: string;
+	repoName?: string;
+	managerRepoIds?: string[];
 }
 
 export interface OfficeAgentInput {
@@ -69,6 +117,7 @@ export interface OfficeAgentBinding extends OfficeServerConnection {
 }
 
 export type OfficeBridgeEvent =
+	| OfficeAgentAction
 	| { type: 'runtime'; agentId: number; sessionId: string; event: RuntimeGlobalEvent }
 	| { type: 'changed'; agentId: number; binding: OfficeAgentBinding }
 	| { type: 'closed'; agentId: number; sessionId: string };
@@ -80,6 +129,7 @@ export interface OfficeVisualSnapshot {
 
 export interface OfficeBridgeApi {
 	readonly version: 1;
+	readonly runtimeOwnershipVersion: 1;
 	configureRuntime(options: { executable: string; env: Record<string, string> }): void;
 	shutdownRuntime(): Promise<void>;
 	getServer(): Promise<OfficeServerConnection>;
@@ -88,6 +138,9 @@ export interface OfficeBridgeApi {
 	focusAgent(agentId: number): Promise<void>;
 	closeAgent(agentId: number): Promise<void>;
 	setMetadata(agentId: number, metadata: OfficeWorkerMetadata): Promise<OfficeAgentBinding>;
+	setAgentPanelState(agentId: number, state: unknown): Promise<void>;
+	openAgentPanel(agentId: number): Promise<void>;
+	setRepositories(repositories: OfficeRepository[]): Promise<void>;
 	readonly onDidEvent: vscode.Event<OfficeBridgeEvent>;
 	getVisualSnapshot(): Promise<OfficeVisualSnapshot>;
 }

@@ -1,10 +1,13 @@
-import type { FloorColor } from './office/types.js'
+import type { FloorColor, OfficeRole } from './office/types.js'
+
+export const OFFICE_ROLE_LABELS: Record<OfficeRole, string> = { builder: 'Engineer / Builder', 'security-reviewer': 'Security Reviewer', verifier: 'Verifier', manager: 'Manager' }
+export const OFFICE_ZONE_FONT_PX = 8
 
 // ── Grid & Layout ────────────────────────────────────────────
 export const TILE_SIZE = 16
 export const DEFAULT_COLS = 32
 export const DEFAULT_ROWS = 34
-export const MAX_COLS = 64
+export const MAX_COLS = 256
 export const MAX_ROWS = 64
 
 // ── Character Animation ─────────────────────────────────────

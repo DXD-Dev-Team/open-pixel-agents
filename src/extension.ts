@@ -28,6 +28,7 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 
 	return {
 		version: 1,
+		runtimeOwnershipVersion: 1,
 		configureRuntime: configureOpenCodeRuntime,
 		shutdownRuntime: shutdownOpenCodeRuntime,
 		getServer: () => provider.getServerConnection(),
@@ -36,6 +37,9 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 		focusAgent: (agentId) => provider.focusManagedAgent(agentId),
 		closeAgent: (agentId) => provider.closeManagedAgent(agentId),
 		setMetadata: (agentId, metadata) => provider.setManagedMetadata(agentId, metadata),
+		setAgentPanelState: (agentId, state) => provider.setAgentPanelState(agentId, state),
+		setRepositories: (repositories) => provider.setRepositories(repositories),
+		openAgentPanel: (agentId) => provider.openAgentPanel(agentId),
 		onDidEvent: provider.bridgeEvents.event,
 		getVisualSnapshot: () => provider.getVisualSnapshot(),
 	};

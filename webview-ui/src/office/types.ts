@@ -66,6 +66,8 @@ export interface Seat {
   /** Preferred for active work; typically adjacent to a desk */
   isWorkSeat: boolean
   /** Desk containing a computer, when this chair faces one. */
+  role?: OfficeRole
+  repoId?: string
   computerDeskId?: string
   assigned: boolean
 }
@@ -138,11 +140,17 @@ export interface PlacedFurniture {
   color?: FloorColor
 }
 
+export type OfficeRole = 'builder' | 'security-reviewer' | 'verifier' | 'manager'
+export interface OfficeRepository { id: string; name: string }
+export interface OfficeZone { repoId?: string; repoName?: string; role: OfficeRole; label: string; col: number; row: number; width: number; height: number }
+
 export interface OfficeLayout {
   version: 1
   layoutRevision?: number
   cols: number
   rows: number
+  zones?: OfficeZone[]
+  officeDefault?: boolean
   tiles: TileType[]
   furniture: PlacedFurniture[]
   /** Per-tile color settings, parallel to tiles array. null = wall/no color */
@@ -159,6 +167,11 @@ export interface OfficeLabel {
   estimatedCost?: number
   needsInput: boolean
   managed?: boolean
+  role?: OfficeRole
+  managerForRole?: 'all' | 'builder' | 'security-reviewer' | 'verifier'
+  repoId?: string
+  repoName?: string
+  managerRepoIds?: string[]
   speech?: { text: string; expiresAt: number; source: 'assistant' | 'task' }
 }
 

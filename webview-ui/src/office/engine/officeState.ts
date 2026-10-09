@@ -14,18 +14,23 @@ import {
   CHARACTER_HIT_HALF_WIDTH,
   CHARACTER_HIT_HEIGHT,
 } from '../../constants.js'
-import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture, OfficeLabel } from '../types.js'
+import type { Character, Seat, FurnitureInstance, TileType as TileTypeVal, OfficeLayout, PlacedFurniture, OfficeLabel, OfficeRole, OfficeRepository } from '../types.js'
 import { createCharacter, updateCharacter } from './characters.js'
 import { matrixEffectSeeds } from './matrixEffect.js'
 import { isWalkable, getWalkableTiles, findPath } from '../layout/tileMap.js'
 import {
   createDefaultLayout,
+  createRepositoryLayout,
   layoutToTileMap,
   layoutToFurnitureInstances,
   layoutToSeats,
   getBlockedTiles,
 } from '../layout/layoutSerializer.js'
 import { getCatalogEntry, getOnStateType } from '../layout/furnitureCatalog.js'
+
+export function effectiveSeatRole(label: Pick<OfficeLabel, 'role' | 'managerForRole'>): OfficeRole | undefined {
+  return label.role === 'manager' && label.managerForRole && label.managerForRole !== 'all' ? label.managerForRole : label.role
+}
 
 export class OfficeState {
   layout: OfficeLayout
@@ -44,12 +49,14 @@ export class OfficeState {
   /** Reverse lookup: sub-agent character ID → parent info */
   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string; sessionId?: string }> = new Map()
   private nextSubagentId = -1
+  repositories: OfficeRepository[] = []
+  private readonly roleTransactions = new Map<number, { agentId: number; oldSeatId: string | null; oldRole?: OfficeRole; oldScope?: OfficeLabel['managerForRole']; oldRepoId?: string; oldRepoName?: string }>()
   private readonly deskReservations = new Map<number, string>()
 
   constructor(layout?: OfficeLayout) {
     this.layout = layout || createDefaultLayout()
     this.tileMap = layoutToTileMap(this.layout)
-    this.seats = layoutToSeats(this.layout.furniture)
+    this.seats = layoutToSeats(this.layout.furniture, this.layout.zones)
     this.blockedTiles = getBlockedTiles(this.layout.furniture)
     this.furniture = layoutToFurnitureInstances(this.layout.furniture)
     this.walkableTiles = getWalkableTiles(this.tileMap, this.blockedTiles)
@@ -60,7 +67,7 @@ export class OfficeState {
   rebuildFromLayout(layout: OfficeLayout, shift?: { col: number; row: number }): void {
     this.layout = layout
     this.tileMap = layoutToTileMap(layout)
-    this.seats = layoutToSeats(layout.furniture)
+    this.seats = layoutToSeats(layout.furniture, layout.zones)
     this.blockedTiles = getBlockedTiles(layout.furniture)
     this.rebuildFurnitureInstances()
     this.walkableTiles = getWalkableTiles(this.tileMap, this.blockedTiles)
@@ -85,7 +92,7 @@ export class OfficeState {
 
     // First pass: try to keep characters at their existing seats
     for (const ch of this.characters.values()) {
-      if (ch.seatId && this.seats.has(ch.seatId) && (!ch.officeLabel.managed || this.seats.get(ch.seatId)?.computerDeskId)) {
+      if (ch.seatId && this.seats.has(ch.seatId) && (!ch.officeLabel.managed || this.seatMatchesRole(this.seats.get(ch.seatId), effectiveSeatRole(ch.officeLabel), ch.officeLabel.repoId))) {
         const seat = this.seats.get(ch.seatId)!
         if (!seat.assigned) {
           seat.assigned = true
@@ -106,7 +113,7 @@ export class OfficeState {
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue
-      const seatId = this.findFreeSeat(ch.officeLabel.managed)
+      const seatId = this.findFreeSeat(ch.officeLabel.managed, effectiveSeatRole(ch.officeLabel), ch.officeLabel.repoId)
       if (seatId) {
         this.seats.get(seatId)!.assigned = true
         ch.seatId = seatId
@@ -161,13 +168,20 @@ export class OfficeState {
     return result
   }
 
+  configureRepositories(repositories: OfficeRepository[]): void {
+    this.repositories = repositories
+    if (this.layout.officeDefault) this.rebuildFromLayout(createRepositoryLayout(repositories))
+  }
+
   availableComputerDesks(): number {
     const occupied = new Set([...this.seats.values()].filter(seat => seat.assigned && seat.computerDeskId).map(seat => seat.computerDeskId))
     return new Set([...this.seats.values()].filter(seat => !seat.assigned && seat.computerDeskId && !occupied.has(seat.computerDeskId)).map(seat => seat.computerDeskId)).size
   }
 
-  reserveComputerDesk(requestId: number): string | null {
-    const seatId = this.findFreeSeat(true)
+  reserveComputerDesk(requestId: number, role?: OfficeRole, agentId?: number, repoId?: string): string | null {
+    const current = agentId === undefined ? undefined : this.characters.get(agentId)?.seatId
+    if (current && this.seatMatchesRole(this.seats.get(current), role, repoId)) { this.deskReservations.set(requestId, current); return current }
+    const seatId = this.findFreeSeat(true, role, repoId)
     if (seatId) {
       this.seats.get(seatId)!.assigned = true
       this.deskReservations.set(requestId, seatId)
@@ -179,18 +193,71 @@ export class OfficeState {
     const seatId = this.deskReservations.get(requestId)
     if (seatId) {
       const seat = this.seats.get(seatId)
-      if (seat) seat.assigned = false
+      if (seat && ![...this.characters.values()].some(ch => ch.seatId === seatId)) seat.assigned = false
       this.deskReservations.delete(requestId)
     }
   }
 
-  private findFreeSeat(computerOnly = false): string | null {
+  private seatMatchesRole(seat: Seat | undefined, role?: OfficeRole, repoId?: string): boolean {
+    return !!seat?.computerDeskId && (!role || !seat.role || seat.role === role) && (!repoId || seat.repoId === repoId || !seat.repoId && this.repositories[0]?.id === repoId)
+  }
+
+  applyRoleSeat(agentId: number, requestId: number, role: OfficeRole, scope?: OfficeLabel['managerForRole'], repoId?: string, repoName?: string): boolean {
+    const ch = this.characters.get(agentId)
+    const target = this.deskReservations.get(requestId)
+    const seat = this.seats.get(target ?? '')
+    if (!ch || !target || !seat || !this.seatMatchesRole(seat, effectiveSeatRole({ role, managerForRole: scope }), repoId)) return false
+    this.roleTransactions.set(requestId, { agentId, oldSeatId: ch.seatId, oldRole: ch.officeLabel.role, oldScope: ch.officeLabel.managerForRole, oldRepoId: ch.officeLabel.repoId, oldRepoName: ch.officeLabel.repoName })
+    // Keep the prior desk occupied until backend persistence and apply both succeed.
+    this.deskReservations.delete(requestId)
+    ch.seatId = target
+    ch.officeLabel.role = role
+    ch.officeLabel.managerForRole = scope
+    ch.officeLabel.repoId = repoId
+    ch.officeLabel.repoName = repoName
+    seat.assigned = true
+    if (!this.startWalkingToTile(ch, seat.seatCol, seat.seatRow)) {
+      this.placeCharacterAtTile(ch, seat.seatCol, seat.seatRow)
+      ch.state = CharacterState.TYPE
+      ch.dir = seat.facingDir
+    }
+    return true
+  }
+
+  finishRoleSeat(requestId: number, commit: boolean): void {
+    const transaction = this.roleTransactions.get(requestId)
+    if (!transaction) { this.releaseComputerDesk(requestId); return }
+    const ch = this.characters.get(transaction.agentId)
+    if (!commit && ch) {
+      const target = this.seats.get(ch.seatId ?? '')
+      if (target && ch.seatId !== transaction.oldSeatId) target.assigned = false
+      ch.seatId = transaction.oldSeatId
+      ch.officeLabel.role = transaction.oldRole
+      ch.officeLabel.managerForRole = transaction.oldScope
+      ch.officeLabel.repoId = transaction.oldRepoId
+      ch.officeLabel.repoName = transaction.oldRepoName
+      const prior = this.seats.get(transaction.oldSeatId ?? '')
+      if (prior) {
+        prior.assigned = true
+        ch.path = []
+        this.placeCharacterAtTile(ch, prior.seatCol, prior.seatRow)
+        ch.state = CharacterState.TYPE
+        ch.dir = prior.facingDir
+      }
+    } else {
+      const prior = this.seats.get(transaction.oldSeatId ?? '')
+      if (prior && (!ch || ch.seatId !== transaction.oldSeatId)) prior.assigned = false
+    }
+    this.roleTransactions.delete(requestId)
+  }
+
+  private findFreeSeat(computerOnly = false, role?: OfficeRole, repoId?: string): string | null {
     const freeWorkSeats: string[] = []
     const freeOtherSeats: string[] = []
     const occupied = new Set([...this.seats.values()].filter(seat => seat.assigned && seat.computerDeskId).map(seat => seat.computerDeskId))
     for (const [uid, seat] of this.seats) {
       if (seat.assigned) continue
-      if (computerOnly && (!seat.computerDeskId || occupied.has(seat.computerDeskId))) continue
+      if (computerOnly && (!this.seatMatchesRole(seat, role, repoId) || occupied.has(seat.computerDeskId ?? ''))) continue
       if (seat.isWorkSeat) freeWorkSeats.push(uid)
       else freeOtherSeats.push(uid)
     }
@@ -292,7 +359,7 @@ export class OfficeState {
     return { palette, hueShift }
   }
 
-  addAgent(id: number, preferredPalette?: number, preferredHueShift?: number, preferredSeatId?: string, skipSpawnEffect?: boolean, managed = false, reservationId?: number): void {
+  addAgent(id: number, preferredPalette?: number, preferredHueShift?: number, preferredSeatId?: string, skipSpawnEffect?: boolean, managed = false, reservationId?: number, role?: OfficeRole, managerForRole?: OfficeLabel['managerForRole'], repoId?: string, repoName?: string): void {
     if (this.characters.has(id)) return
     if (reservationId !== undefined) {
       preferredSeatId = this.deskReservations.get(reservationId) ?? preferredSeatId
@@ -314,12 +381,12 @@ export class OfficeState {
     let seatId: string | null = null
     if (preferredSeatId && this.seats.has(preferredSeatId)) {
       const seat = this.seats.get(preferredSeatId)!
-      if (!seat.assigned && (!managed || !!seat.computerDeskId)) {
+      if (!seat.assigned && (!managed || this.seatMatchesRole(seat, effectiveSeatRole({ role, managerForRole }), repoId))) {
         seatId = preferredSeatId
       }
     }
     if (!seatId) {
-      seatId = this.findFreeSeat(managed)
+      seatId = this.findFreeSeat(managed, effectiveSeatRole({ role, managerForRole }), repoId)
     }
 
     let ch: Character
@@ -340,6 +407,10 @@ export class OfficeState {
     }
 
     ch.officeLabel.managed = managed
+    ch.officeLabel.role = role ?? 'builder'
+    ch.officeLabel.managerForRole = managerForRole
+    ch.officeLabel.repoId = repoId
+    ch.officeLabel.repoName = repoName
     if (!skipSpawnEffect) {
       const entrance = this.getEntranceTile()
       this.placeCharacterAtTile(ch, entrance.col, entrance.row)
@@ -526,7 +597,7 @@ export class OfficeState {
     const derivedOffset = 45 + (hash % 180)
     const hueShift = (baseHue + derivedOffset) % 360
 
-    const bestSeatId = this.findFreeSeat(parentCh?.officeLabel.managed)
+    const bestSeatId = this.findFreeSeat(parentCh?.officeLabel.managed, parentCh ? effectiveSeatRole(parentCh.officeLabel) : undefined, parentCh?.officeLabel.repoId)
     if (parentCh?.officeLabel.managed && !bestSeatId) return null
 
     let ch: Character
@@ -736,11 +807,14 @@ export class OfficeState {
   setOfficeLabel(id: number, label: OfficeLabel): void {
     const ch = this.characters.get(id)
     if (!ch) return
+    const movingRole = [...this.roleTransactions.values()].some(transaction => transaction.agentId === id)
+    if (movingRole) { ch.officeLabel = { ...label, role: ch.officeLabel.role, managerForRole: ch.officeLabel.managerForRole, repoId: ch.officeLabel.repoId, repoName: ch.officeLabel.repoName }; return }
     ch.officeLabel = { ...label }
-    if (label.managed && !this.seats.get(ch.seatId ?? '')?.computerDeskId) {
+    if (label.managed && !this.seatMatchesRole(this.seats.get(ch.seatId ?? ''), effectiveSeatRole(label), label.repoId)) {
       const previous = this.seats.get(ch.seatId ?? '')
       if (previous) previous.assigned = false
-      const seatId = this.findFreeSeat(true)
+      const seatId = this.findFreeSeat(true, effectiveSeatRole(label), label.repoId)
+      if (!seatId) { if (previous) previous.assigned = true; return }
       ch.seatId = seatId
       const seat = seatId ? this.seats.get(seatId) : undefined
       if (seat) {

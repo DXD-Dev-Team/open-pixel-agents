@@ -1,5 +1,5 @@
 import { TileType, TILE_SIZE, CharacterState } from '../types.js'
-import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor } from '../types.js'
+import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor, OfficeZone } from '../types.js'
 import { getCachedSprite, getOutlineSprite } from '../sprites/spriteCache.js'
 import { getCharacterSprites } from '../sprites/spriteData.js'
 import { getCharacterSprite } from './characters.js'
@@ -30,6 +30,7 @@ import {
   OFFICE_SPEECH_MAX_WIDTH_PX,
   OFFICE_SPEECH_MAX_LINES,
   OFFICE_SPEECH_LABEL_GAP_PX,
+  OFFICE_ZONE_FONT_PX,
   FALLBACK_FLOOR_COLOR,
   SEAT_OWN_COLOR,
   SEAT_AVAILABLE_COLOR,
@@ -476,7 +477,8 @@ export function renderBubbles(
       while (name.length > 1 && ctx.measureText(name + '…').width > maxNameWidth) name = name.slice(0, -1)
       name += '…'
     }
-    const lines = [name, `${label.needsInput ? '✋ ' : ''}${label.status}`]
+    const scopeName = label.managerForRole === 'builder' ? 'Build' : label.managerForRole === 'security-reviewer' ? 'Security' : label.managerForRole === 'verifier' ? 'Verification' : 'Office'
+    const lines = [name, ...(label.role === 'manager' ? [`${scopeName} manager${(label.managerRepoIds?.length ?? 0) > 1 ? ' · multi-repo' : ''}`] : []), `${label.needsInput ? '✋ ' : ''}${label.status}`]
     if (label.providerKind === 'codex') {
       const tokens = Math.max(0, Math.round(label.usageTokens ?? 0))
       let usage = tokens === 0 ? '0' : `${tokens.toLocaleString()} tokens`
@@ -600,6 +602,7 @@ export function renderFrame(
   tileColors?: Array<FloorColor | null>,
   layoutCols?: number,
   layoutRows?: number,
+  zones?: OfficeZone[],
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
@@ -616,6 +619,29 @@ export function renderFrame(
 
   // Draw tiles (floor + wall base color)
   renderTileGrid(ctx, tileMap, offsetX, offsetY, zoom, tileColors, layoutCols)
+
+  // Area signs belong to the same office canvas. Custom layouts may omit them.
+  for (const zone of zones ?? []) {
+    const x = offsetX + (zone.col + zone.width / 2) * TILE_SIZE * zoom
+    const y = offsetY + (zone.row + zone.height - 0.6) * TILE_SIZE * zoom
+    ctx.save()
+    ctx.font = `bold ${OFFICE_ZONE_FONT_PX * zoom}px monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const maxWidth = (zone.width * TILE_SIZE - 8) * zoom
+    const fit = (text: string) => {
+      if (ctx.measureText(text).width <= maxWidth - 12 * zoom) return text
+      while (text.length > 1 && ctx.measureText(`${text}…`).width > maxWidth - 12 * zoom) text = text.slice(0, -1)
+      return `${text}…`
+    }
+    const lines = [zone.repoName, zone.label].filter((text): text is string => !!text).map(fit)
+    const width = Math.max(...lines.map(text => ctx.measureText(text).width)) + 12 * zoom
+    ctx.fillStyle = '#17302dcc'
+    ctx.fillRect(Math.round(x - width / 2), Math.round(y - (lines.length * 5 + 2) * zoom), Math.round(width), (lines.length * 10 + 4) * zoom)
+    ctx.fillStyle = '#c7e5d8'
+    lines.forEach((line, index) => ctx.fillText(line, Math.round(x), Math.round(y + (index * 10 - (lines.length - 1) * 5) * zoom)))
+    ctx.restore()
+  }
 
   // Seat indicators (below furniture/characters, on top of floor)
   if (selection) {
