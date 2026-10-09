@@ -160,14 +160,15 @@ function App() {
     vscode.postMessage({ type: 'closeAgent', id })
   }, [])
 
+  const openAgentPanel = panel.open
   const handleClick = useCallback((agentId: number) => {
-    if (panel.open(agentId)) return
+    if (openAgentPanel(agentId)) return
     // Standalone agents retain their terminal focus behavior.
     const os = getOfficeState()
     const meta = os.subagentMeta.get(agentId)
     const focusId = meta ? meta.parentAgentId : agentId
     vscode.postMessage({ type: 'focusAgent', id: focusId })
-  }, [panel.open])
+  }, [openAgentPanel])
 
   const officeState = getOfficeState()
 
@@ -311,7 +312,7 @@ function App() {
         onCloseAgent={handleCloseAgent}
       />
 
-      {panel.target && <AgentPanel {...panel.target} state={panel.state} error={panel.error} draft={panel.draft} onDraftChange={panel.setDraft} onAction={panel.action} onClose={panel.close} />}
+      {panel.target && <AgentPanel {...panel.target} state={panel.state} error={panel.error} actionState={panel.actionState} draft={panel.draft} onDraftChange={panel.setDraft} onAction={panel.action} onClose={panel.close} />}
 
       {isDebugMode && (
         <DebugView

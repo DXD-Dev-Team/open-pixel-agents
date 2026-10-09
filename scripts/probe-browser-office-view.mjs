@@ -47,6 +47,16 @@ const firstClose = provider.disposeBrowserOffice(), secondClose = provider.dispo
 let closed = false; void secondClose.then(() => { closed = true; }); await Promise.resolve(); assert.equal(closed, false);
 finishClose(); await Promise.all([firstClose, secondClose]); assert.equal(closed, true);
 console.log('PASS: provider browser actions exclude native authority, arbitrary commands, unmanaged agents and private fields.');
+// Retry only the real pre-restore startup failure. The resumed stage is a
+// controlled harness promise; no layout files, terminals or runtime are created.
+globalThis.__browserProbeVscode.workspace.workspaceFolders = [{ uri: { fsPath: '/fabricated/never-accessed' } }];
+globalThis.__browserProbeVscode.window.showErrorMessage = () => undefined;
+const retryProvider = new PixelAgentsViewProvider({ extensionUri: { fsPath: fork }, subscriptions: [], workspaceState: state, globalState: state }, { ensureServer: async () => { throw new Error('Fixture startup unavailable'); } });
+retryProvider.webviewView = { show() {}, webview: { postMessage: () => Promise.resolve(true) } }; retryProvider.nativeReady = true;
+await assert.rejects(retryProvider.beginInitialization(), /server startup failed/); await Promise.resolve(); assert.equal(retryProvider.initialization, null); assert.equal(retryProvider.agents.size, 0);
+let retried = 0; retryProvider.bootstrapWebview = async () => { retried++; }; await retryProvider.ensureReady(false); assert.equal(retried, 1); retryProvider.dispose();
+globalThis.__browserProbeVscode.workspace.workspaceFolders = [];
+console.log('PASS: native initialization can retry a failed startup before restore without creating agents or touching layout files.');
 const panels = new Map();
 for (let id = 1; id <= 3; id++) { const panel = { worker: { id: `worker-${id}`, name: `Fixture ${id}`, role: roles[id - 1], status: 'idle', started: true }, chat: [{ id: `chat-${id}`, role: 'assistant', text: `Fixture conversation ${id}`, createdAt: 1 }], pending: false, busy: false, accounts: desk.accounts, account: desk.accounts[0] }; panels.set(id, panel); await provider.setAgentPanelState(id, panel); }
 // Fixed host command simulation: each browser may open a chat without opening a
@@ -56,7 +66,24 @@ globalThis.__browserProbeVscode.commands.executeCommand = async (...args) => {
   if (args[0] === 'office-desk.browserAction' && args[1].action === 'chatWorker') {
     const id = Number(args[1].id.replace('worker-', '')); if (panels.has(id)) await provider.setAgentPanelState(id, panels.get(id));
   }
+  if (args[0] === 'office-desk.browserAction' && ['addAccount', 'connectAccount'].includes(args[1].action)) return new Promise((resolve, reject) => { adminPending.set(args[1].action, { resolve, reject, message: args[1] }); });
+  if (args[0] === 'office-desk.browserAgentAction') {
+    const action = args[1];
+    if (action.action === 'sign-in') return new Promise((resolve, reject) => { adminPending.set('agent-sign-in', { resolve, reject, message: action }); });
+    if (action.action === 'send') {
+      const panel = panels.get(action.agentId); panel.busy = true; panel.pending = true;
+      panel.chat.push({ id: `accepted-${Date.now()}`, role: 'user', text: action.text, createdAt: Date.now() }); await provider.setAgentPanelState(action.agentId, panel);
+      return new Promise(resolve => { pendingTurn = { resolve, agentId: action.agentId }; });
+    }
+    if (action.action === 'stop') {
+      const panel = panels.get(action.agentId); panel.busy = false; panel.pending = false; await provider.setAgentPanelState(action.agentId, panel);
+    }
+    if (action.action === 'start') starts++;
+  }
+  return { status: 'completed' };
 };
+const adminPending = new Map();
+let pendingTurn;
 let starts = 0;
 provider.bridgeEvents.event(action => { if (action.action === 'start') starts++; if (action.action === 'send') { const panel = panels.get(action.agentId); panel.chat.push({ id: `accepted-${Date.now()}`, role: 'user', text: action.text, createdAt: Date.now() }); void provider.setAgentPanelState(action.agentId, panel); } });
 const output = path.join(fork, '..', 'spike', 'results'); await mkdir(output, { recursive: true });
@@ -65,7 +92,13 @@ try {
   const context = await browser.newContext({ viewport: { width: 1180, height: 680 }, deviceScaleFactor: 2 });
   const page = await context.newPage(); page.setDefaultTimeout(8000); const errors = []; page.on('pageerror', error => errors.push(error.message));
   const url = await provider.openBrowserOffice();
-  await page.goto(url); await page.waitForSelector('canvas[data-office-canvas]');
+  let finishBootstrap; const heldBootstrap = new Promise(resolve => { finishBootstrap = resolve; });
+  provider.ensureReady = async () => heldBootstrap;
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.getByText('Preparing the shared office in VS Code…').waitFor();
+  assert.equal(await page.getByText('Connected to VS Code · Layout is managed in VS Code').count(), 0);
+  finishBootstrap(); provider.ensureReady = async () => undefined;
+  await page.waitForSelector('canvas[data-office-canvas]');
   assert.equal(await page.title(), 'The Office');
   await page.getByText('Connected to VS Code · Layout is managed in VS Code').waitFor();
   assert.equal(new URL(page.url()).hash, '');
@@ -73,6 +106,45 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Settings', exact: true }).count(), 0);
   await page.getByRole('button', { name: /Team · 4/ }).click();
   await page.getByRole('heading', { name: /Closed fixture/ }).waitFor();
+  await page.getByRole('button', { name: 'admin', exact: true }).click();
+  await page.getByRole('button', { name: '+ Account', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Account name', exact: true }).fill('Browser fixture account');
+  await page.getByRole('combobox', { name: 'New account sign-in method' }).selectOption('api');
+  assert.equal(commands.filter(([, message]) => message?.action === 'addAccount').length, 0);
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
+  await page.getByRole('button', { name: 'Continue in VS Code', exact: true }).click();
+  await page.getByText(/Account setup: continue in VS Code/).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Continue in VS Code', exact: true }).isDisabled(), true);
+  await page.waitForFunction(() => document.querySelector('.office-browser-account-form')?.textContent.includes('Credentials are entered securely'));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(adminPending.get('addAccount').message.name, 'Browser fixture account'); assert.equal(adminPending.get('addAccount').message.method, 'api');
+  await page.screenshot({ path: path.join(output, 'office_browser_admin_pending.png') });
+  await page.locator('.office-browser-account-form').evaluate(form => form.requestSubmit());
+  await page.getByText(/already waiting for VS Code/).waitFor();
+  assert.equal(commands.filter(([, message]) => message?.action === 'addAccount').length, 1);
+  adminPending.get('addAccount').resolve({ status: 'cancelled' });
+  await page.getByText('Account setup cancelled. You can retry.').waitFor();
+  assert.equal(await page.locator('.office-action-completed').count(), 0);
+  assert.equal(await page.getByText(/already waiting for VS Code/).count(), 0);
+  await page.screenshot({ path: path.join(output, 'office_browser_admin_cancelled.png') });
+  await page.getByRole('button', { name: 'Continue in VS Code', exact: true }).click(); await new Promise(resolve => setTimeout(resolve, 100));
+  adminPending.get('addAccount').reject(new Error('DO-NOT-EXPORT fixture host error'));
+  await page.locator('.office-action-failed').waitFor(); assert(!await page.locator('body').innerText().then(text => text.includes('DO-NOT-EXPORT')));
+  assert.equal(await page.locator('.office-action-completed').count(), 0);
+  await page.screenshot({ path: path.join(output, 'office_browser_admin_error.png') });
+  await page.getByRole('button', { name: 'Continue in VS Code', exact: true }).click(); await new Promise(resolve => setTimeout(resolve, 100));
+  adminPending.get('addAccount').resolve({ status: 'completed' }); await page.getByText('Account setup completed.').waitFor();
+  await page.getByRole('combobox', { name: 'Sign-in method for Fixture account' }).selectOption('oauth');
+  await page.getByRole('button', { name: 'Reconnect in VS Code', exact: true }).click(); await page.getByText(/Sign-in: continue in VS Code/).waitFor();
+  await new Promise(resolve => setTimeout(resolve, 100)); assert.equal(adminPending.get('connectAccount').message.method, 'oauth');
+  adminPending.get('connectAccount').resolve({ status: 'cancelled' }); await page.getByText('Sign-in cancelled. You can retry.').waitFor();
+  await page.getByRole('button', { name: 'Reconnect in VS Code', exact: true }).click(); await new Promise(resolve => setTimeout(resolve, 100));
+  adminPending.get('connectAccount').reject(new Error('DO-NOT-EXPORT fixture sign-in error')); await page.locator('.office-action-failed').waitFor();
+  provider.setDeskState({ ...desk, ready: false, error: 'Fixture runtime is not ready.' });
+  await page.getByText('Office setup is not ready. Open Office Desk in VS Code to resolve its connection error.').waitFor();
+  await page.getByRole('button', { name: 'repos', exact: true }).click(); assert.equal(await page.getByRole('button', { name: '+ Add repository in VS Code' }).isDisabled(), true);
+  provider.setDeskState(desk); await page.getByRole('button', { name: 'agents', exact: true }).click();
+  console.log('PASS: public Admin form starts no authentication before submit; pending/cancelled/failure/completion are correlated; duplicate requests and false success are prevented; readiness waits for bootstrap.');
   await page.getByRole('button', { name: 'Chat & controls', exact: true }).last().click();
   await page.waitForFunction(() => document.querySelector('.office-browser-desk')?.textContent.includes('Starting…'));
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -92,11 +164,34 @@ try {
   assert.equal(await second.getByRole('dialog').count(), 0); assert.equal(await page.getByRole('heading', { name: 'Fixture 1', exact: true }).count(), 1);
   await second.getByRole('button', { name: /Team · 4/ }).click();
   await second.getByRole('button', { name: 'Chat & controls', exact: true }).first().click(); await second.getByRole('dialog').waitFor();
+  await page.evaluate(() => { window.officeFixtureActions = []; window.addEventListener('message', event => { if (event.data?.type === 'officeBrowserActionState') window.officeFixtureActions.push(event.data); }); });
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  await page.locator('.office-dialog-action-feedback').getByText(/Sign-in: continue in VS Code/).waitFor();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(adminPending.get('agent-sign-in').message.agentId, 1);
+  assert.equal(await page.locator('.office-dialog-action-completed').count(), 0);
+  await page.screenshot({ path: path.join(output, 'office_browser_agent_pending.png') });
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  await page.locator('.office-dialog-error').getByText(/already waiting for VS Code/).waitFor();
+  assert.equal(commands.filter(([command, action]) => command === 'office-desk.browserAgentAction' && action.action === 'sign-in').length, 1);
+  await page.locator('.office-dialog-action-pending').waitFor();
+  adminPending.get('agent-sign-in').resolve({ status: 'cancelled' }); await page.locator('.office-dialog-action-feedback').getByText('Sign-in cancelled. You can retry.').waitFor();
+  assert.equal(await page.locator('.office-dialog-error').getByText(/already waiting for VS Code/).count(), 0);
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).click(); await new Promise(resolve => setTimeout(resolve, 100));
+  adminPending.get('agent-sign-in').reject(new Error('DO-NOT-EXPORT fixture agent sign-in failure')); await page.locator('.office-dialog-action-failed').waitFor();
   await page.getByRole('textbox', { name: 'Message this worker' }).fill('Headless browser chat fixture'); await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('.office-dialog-chat').getByText('Headless browser chat fixture', { exact: true }).waitFor();
   await second.locator('.office-dialog-chat').getByText('Headless browser chat fixture', { exact: true }).waitFor();
   await page.waitForFunction(() => document.querySelector('#office-agent-message')?.value === '');
   assert.equal(await page.getByRole('textbox', { name: 'Message this worker' }).inputValue(), '');
+  assert.equal(await page.getByRole('button', { name: 'Stop', exact: true }).isEnabled(), true);
+  assert.equal(await page.locator('.office-dialog-action-completed').count(), 0);
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.locator('.office-dialog-action-completed').waitFor(); assert(pendingTurn);
+  pendingTurn.resolve({ status: 'cancelled' }); pendingTurn = undefined;
+  await page.waitForFunction(() => window.officeFixtureActions.some(action => action.action === 'send' && action.state === 'cancelled'));
+  await page.locator('.office-dialog-action-completed').waitFor();
+  assert(commands.some(([command, action]) => command === 'office-desk.browserAgentAction' && action.action === 'stop' && action.agentId === 1));
   const nativeView = provider.webviewView; provider.webviewView = undefined;
   panels.get(1).chat.push({ id: 'native-view-disposed', role: 'assistant', text: 'Live update while native view is disposed', createdAt: 2 });
   await provider.setAgentPanelState(1, panels.get(1)); provider.runtimeController.postSnapshot();
@@ -135,6 +230,6 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Send', exact: true }).isDisabled(), true);
   await page.getByRole('button', { name: 'Start', exact: true }).last().click({ force: true }).catch(() => undefined); assert.equal(starts, 0);
   assert.deepEqual(errors, []);
-  await writeFile(path.join(output, 'browser-office-report.json'), JSON.stringify({ result: 'passed', evidence: 'headless production React/canvas + real loopback HTTP/SSE; simulated VS Code/worker state', nativeVSCodeE2E: false, realProviderInference: false, groups: 4, lifecycle: ['native-view-disposal fanout', 'shared shutdown await', 'reconnect deleted-target reconciliation', 'paused-manager Chat route'] }, null, 2) + '\n');
+  await writeFile(path.join(output, 'browser-office-report.json'), JSON.stringify({ result: 'passed', evidence: 'headless production React/canvas + real loopback HTTP/SSE; simulated VS Code/worker state', nativeVSCodeE2E: false, realProviderInference: false, groups: 6, adminOutcomes: ['pending', 'cancelled', 'failed', 'completed'], explicitBootstrapReady: true, publicAccountForm: true, lifecycle: ['pre-restore startup retry harness', 'native-view-disposal fanout', 'shared shutdown await', 'reconnect deleted-target reconciliation', 'paused-manager Chat route'] }, null, 2) + '\n');
   console.log('PASS: narrow viewport keeps modal in screen and disconnect disables agent commands.');
 } finally { await browser.close(); await provider.disposeBrowserOffice(); provider.agents.clear(); provider.dispose(); delete globalThis.__browserProbeVscode; }

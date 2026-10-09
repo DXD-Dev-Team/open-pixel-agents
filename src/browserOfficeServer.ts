@@ -30,7 +30,7 @@ const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inl
 export interface BrowserOfficeServerOptions {
 	assetsDirectory: string;
 	connect(send: (message: unknown) => void): Promise<{ dispose(): void | Promise<void> }>;
-	dispatch(message: unknown): Promise<void>;
+	dispatch(message: unknown): Promise<unknown>;
 }
 interface BrowserSession { csrf: string; expiresAt: number; streams: Set<BrowserStream> }
 interface BrowserStream {
@@ -74,7 +74,15 @@ export class BrowserOfficeServer {
 
 	async start(): Promise<{ url: string }> {
 		if (this.disposed) { throw new Error('The browser office is closed. Open it from a running VS Code office.'); }
-		this.starting ??= this.listen();
+		if (!this.starting) {
+			const starting: Promise<void> = this.listen().catch(async error => {
+				// A retry must wait until the failed attempt owns no listener or socket.
+				await this.closeListener();
+				if (this.starting === starting) { this.starting = undefined; }
+				throw error;
+			});
+			this.starting = starting;
+		}
 		await this.starting;
 		if (this.disposed) { throw new Error('The browser office is closed.'); }
 		this.expire();
@@ -118,6 +126,17 @@ export class BrowserOfficeServer {
 				resolve();
 			});
 		});
+	}
+	private async closeListener(): Promise<void> {
+		const server = this.server;
+		if (server) {
+			const closed = new Promise<void>(resolve => { server.close(() => resolve()); });
+			for (const socket of this.sockets) { socket.destroy(); }
+			await closed;
+			if (this.server === server) { this.server = undefined; }
+		}
+		for (const socket of this.sockets) { socket.destroy(); }
+		this.origin = '';
 	}
 
 	private headers(response: ServerResponse): void {
@@ -230,8 +249,10 @@ export class BrowserOfficeServer {
 					this.requireOrigin(request); this.authorize(request);
 					const message = await this.body(request);
 					// Message authority and allowlisting live in the VS Code provider.
-					await this.options.dispatch(message);
-					this.json(response, 200, { ok: true }); return;
+					const result = await this.options.dispatch(message);
+					const status = result && typeof result === 'object' && !Array.isArray(result) && Object.hasOwn(result, 'status') &&
+						(result as Record<string, unknown>).status === 'cancelled' ? 'cancelled' : 'completed';
+					this.json(response, 200, { ok: true, status }); return;
 				}
 				throw new RequestFailure(404, 'Unknown office endpoint.');
 			}
@@ -302,6 +323,10 @@ export class BrowserOfficeServer {
 		if (size > EVENT_LIMIT || stream.response.writableLength + size > BUFFER_LIMIT) { this.closeStream(stream, true); return; }
 		stream.response.write(frame);
 	}
+	private connectionFailed(stream: BrowserStream): void {
+		this.send(stream, { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+		this.closeStream(stream);
+	}
 	private async events(response: ServerResponse, session: BrowserSession): Promise<void> {
 		if (this.streams.size >= STREAM_LIMIT || this.connecting.size >= STREAM_LIMIT || session.streams.size >= 2) { throw new RequestFailure(429, 'Too many browser office event streams are open.'); }
 		response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
@@ -315,13 +340,13 @@ export class BrowserOfficeServer {
 			response.write(': keep-alive\n\n');
 		}, HEARTBEAT_INTERVAL);
 		stream.heartbeat.unref();
-		stream.timeout = setTimeout(() => this.closeStream(stream), BOOTSTRAP_TIMEOUT);
+		stream.timeout = setTimeout(() => this.connectionFailed(stream), BOOTSTRAP_TIMEOUT);
 		stream.timeout.unref();
 		const connection = Promise.resolve().then(() => this.options.connect(message => this.send(stream, message))).then(subscription => {
 			clearTimeout(stream.timeout);
 			if (stream.closed || this.disposed) { this.release(subscription); }
 			else { stream.subscription = subscription; }
-		}).catch(() => this.closeStream(stream)).finally(() => this.connecting.delete(connection));
+		}).catch(() => this.connectionFailed(stream)).finally(() => this.connecting.delete(connection));
 		this.connecting.add(connection);
 		await connection;
 	}
@@ -343,12 +368,7 @@ export class BrowserOfficeServer {
 		for (const stream of this.streams) { this.closeStream(stream); }
 		this.closing = (async () => {
 			await this.starting?.catch(() => undefined);
-			if (this.server?.listening) {
-				const closed = new Promise<void>(resolve => { this.server!.close(() => resolve()); });
-				for (const socket of this.sockets) { socket.destroy(); }
-				await closed;
-			}
-			for (const socket of this.sockets) { socket.destroy(); }
+			await this.closeListener();
 			await Promise.allSettled(this.cleanup);
 		})();
 		return this.closing;

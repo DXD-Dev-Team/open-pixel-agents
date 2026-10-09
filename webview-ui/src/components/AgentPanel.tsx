@@ -3,6 +3,7 @@ import type { OfficeRole, OfficeStatus } from '../office/types.js'
 import { OFFICE_ROLE_LABELS } from '../constants.js'
 import './AgentPanel.css'
 import { officeConnection } from '../vscodeApi.js'
+import type { BrowserActionState } from '../vscodeApi.js'
 
 export type AgentActionName = 'open' | 'send' | 'start' | 'stop' | 'close' | 'role' | 'manager-mode' | 'assign-team' | 'approve' | 'reject' | 'attention' | 'sign-in' | 'change-account' | 'add-account' | 'manager-repos' | 'manager-scope'
 interface PanelAccount { id: string; name: string; kind: 'claude' | 'codex' | 'grok'; connected: boolean; authType?: string; loginName?: string }
@@ -22,9 +23,9 @@ export interface AgentPanelState {
 export interface AgentPanelAction { action: AgentActionName; text?: string; role?: OfficeRole; mode?: 'auto' | 'human-approval'; teamIds?: string[]; proposalId?: string; accountId?: string; kind?: 'claude' | 'codex' | 'grok'; repoIds?: string[]; scopeRole?: 'all' | 'builder' | 'security-reviewer' | 'verifier' }
 const roleLabels = OFFICE_ROLE_LABELS
 
-interface Props { agentId: number; name: string; state?: AgentPanelState; error?: string; childName?: string; draft: string; onDraftChange: (text: string) => void; onAction: (action: AgentPanelAction) => void; onClose: () => void }
+interface Props { agentId: number; name: string; state?: AgentPanelState; error?: string; childName?: string; actionState?: BrowserActionState; draft: string; onDraftChange: (text: string) => void; onAction: (action: AgentPanelAction) => void; onClose: () => void }
 
-export function AgentPanel({ agentId, name, state, error, childName, draft, onDraftChange, onAction, onClose }: Props) {
+export function AgentPanel({ agentId, name, state, error, childName, actionState, draft, onDraftChange, onAction, onClose }: Props) {
   const { connected } = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
   const dialog = useRef<HTMLDivElement>(null)
   const composer = useRef<HTMLTextAreaElement>(null)
@@ -64,6 +65,8 @@ export function AgentPanel({ agentId, name, state, error, childName, draft, onDr
   const manager = state?.manager
   const coordinating = manager?.triaging || manager?.coordinating || manager?.executing
   const idle = !!state && !state.busy && !state.pending && !coordinating
+  const actionLabel = actionState?.action === 'sign-in' ? 'Sign-in' : actionState?.action === 'add-account' ? 'Account setup' : actionState?.action === 'send' ? 'Message' : 'Agent action'
+  const actionFeedback = actionState?.state === 'pending' ? ['sign-in', 'add-account', 'attention'].includes(actionState.action) ? `${actionLabel}: continue in VS Code. Complete or cancel the dialog there; this browser is waiting for its result.` : `${actionLabel}: waiting for VS Code…` : actionState?.state === 'cancelled' ? `${actionLabel} cancelled. You can retry.` : actionState?.state === 'completed' ? `${actionLabel} completed.` : actionState?.error
   const lastUser = state?.chat.filter(item => item.role === 'user').at(-1)
   const copyReply = async (id: string, text: string) => {
     try { await navigator.clipboard.writeText(text); setCopied(id) } catch { setCopied(null) }
@@ -75,6 +78,7 @@ export function AgentPanel({ agentId, name, state, error, childName, draft, onDr
           <div><p className="office-dialog-eyebrow">THE OFFICE · AGENT CONTROLS</p><h2 id="office-agent-dialog-title">{state?.worker.name ?? name}</h2></div>
           <button type="button" className="office-dialog-dismiss" aria-label="Close agent controls" onClick={onClose}>×</button>
         </header>
+        {actionFeedback && <p className={`office-dialog-action-feedback office-dialog-action-${actionState?.state}`} role={actionState?.state === 'failed' ? 'alert' : 'status'}>{actionFeedback}</p>}
         {childName && <p className="office-dialog-child">Opened from child “{childName}”. These controls belong to its parent worker.</p>}
         {!connected && <p className="office-dialog-error" role="status">Reconnect to VS Code to use these controls.</p>}
         {!state ? <p className="office-dialog-loading" role="status">Loading this worker’s conversation…</p> : <fieldset className="office-dialog-runtime" disabled={!connected}>

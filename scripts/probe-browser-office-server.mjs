@@ -52,6 +52,7 @@ async function fixture(t) {
   const server = new BrowserOfficeServer({ assetsDirectory, connect: send => control.connect(send), dispatch: async message => {
     if (message?.type !== 'fixtureAllowed') throw new Error('fabricated-private-dispatch-detail');
     control.messages.push(message);
+    return control.dispatchResult;
   } });
   const launch = await server.start();
   const url = new URL(launch.url);
@@ -88,8 +89,8 @@ async function fixture(t) {
     const decode = new TextDecoder();
     let pending = '';
     return {
-      async next() {
-        const timer = setTimeout(() => abort.abort(), 3000);
+      async next(timeoutMs = 3000) {
+        const timer = setTimeout(() => abort.abort(), timeoutMs);
         try {
           for (;;) {
             const boundary = pending.indexOf('\n\n');
@@ -180,7 +181,7 @@ test('messages and SSE require cookie plus CSRF and dispatch only through the su
   assert.equal((await fetch(`${value.origin}/api/events`, { headers: { Cookie: session.cookie, 'X-Office-CSRF': session.csrf, Origin: 'https://hostile.invalid' } })).status, 403);
   assert.deepEqual(value.control.messages, []);
   const accepted = await value.post('/api/message', message, session);
-  assert.equal(accepted.status, 200); assert.deepEqual(await accepted.json(), { ok: true });
+  assert.equal(accepted.status, 200); assert.deepEqual(await accepted.json(), { ok: true, status: 'completed' });
   assert.deepEqual(value.control.messages, [message]);
   const rejected = await value.post('/api/message', { type: 'unapproved' }, session);
   assert.equal(rejected.status, 500); assert(!(await rejected.text()).includes('fabricated-private'));
@@ -369,4 +370,103 @@ test('failed asset startup and disposal before startup never expose a listener',
   await assert.rejects(failed.start()); await failed.dispose();
   const closed = new BrowserOfficeServer({ assetsDirectory: value.assetsDirectory, connect: async () => ({ dispose() {} }), dispatch: async () => {} });
   await closed.dispose(); await assert.rejects(closed.start(), /closed/i);
+});
+
+test('a failed asset startup can retry successfully after assets become available', async t => {
+  const value = await fixture(t); const assetsDirectory = path.join(value.directory, 'retry-assets');
+  const retry = new BrowserOfficeServer({ assetsDirectory, connect: async () => ({ dispose() {} }), dispatch: async () => {} });
+  t.after(() => retry.dispose());
+  const attempts = await Promise.allSettled([retry.start(), retry.start()]);
+  assert(attempts.every(attempt => attempt.status === 'rejected'));
+  await mkdir(assetsDirectory); await writeFile(path.join(assetsDirectory, 'index.html'), '<title>Recovered local office</title>');
+  const first = new URL((await retry.start()).url); const second = new URL((await retry.start()).url);
+  assert.equal(first.origin, second.origin); assert.notEqual(first.hash, second.hash);
+  assert((await (await fetch(first.origin)).text()).includes('Recovered local office'));
+  await retry.dispose(); await assert.rejects(fetch(first.origin));
+});
+
+test('a failed loopback listen releases its failed server before a subsequent retry binds', async t => {
+  const value = await fixture(t); const servers = [];
+  const failedBundle = new Module(path.join(root, 'scripts/browser-office-listen-retry.cjs'));
+  failedBundle.filename = failedBundle.id; failedBundle.paths = Module._nodeModulePaths(root);
+  const nativeRequire = failedBundle.require.bind(failedBundle);
+  failedBundle.require = id => {
+    if (id !== 'node:http') return nativeRequire(id);
+    const http = nativeRequire(id);
+    return { ...http, createServer(...args) {
+      const server = http.createServer(...args); const listen = server.listen.bind(server); const first = servers.length === 0;
+      servers.push(server);
+      server.listen = (port, host, callback) => listen(first ? Number(value.url.port) : port, host, callback);
+      return server;
+    } };
+  };
+  failedBundle._compile(bundle.outputFiles[0].text, failedBundle.filename);
+  const retry = new failedBundle.exports.BrowserOfficeServer({ assetsDirectory: value.assetsDirectory,
+    connect: async () => ({ dispose() {} }), dispatch: async () => {} });
+  t.after(() => retry.dispose());
+  const attempts = await Promise.allSettled([retry.start(), retry.start()]);
+  assert(attempts.every(attempt => attempt.status === 'rejected' && attempt.reason.code === 'EADDRINUSE'));
+  assert.equal(servers.length, 1, 'Concurrent launches must share one initial listener attempt.');
+  assert.equal(servers[0].listening, false);
+  const recovered = new URL((await retry.start()).url);
+  assert.equal(recovered.hostname, '127.0.0.1'); assert.notEqual(recovered.port, value.url.port);
+  assert.equal((await fetch(recovered.origin)).status, 200);
+  assert.equal(servers.length, 2);
+  await retry.dispose(); assert(servers.every(server => !server.listening));
+  await assert.rejects(fetch(recovered.origin));
+});
+
+test('message responses preserve only explicit completed or cancelled status and never dispatch output', async t => {
+  const value = await fixture(t); const session = await value.connect();
+  const privateData = 'FABRICATED-PRIVATE-RETURN-DETAIL';
+  for (const [result, expected] of [
+    [{ status: 'completed', credential: privateData }, 'completed'],
+    [{ status: 'cancelled', detail: privateData }, 'cancelled'],
+    [{ status: 'unknown', error: privateData }, 'completed'],
+    [{ status: 5, password: privateData }, 'completed'],
+    [undefined, 'completed'], [null, 'completed'], ['cancelled', 'completed'],
+    [[{ status: 'cancelled' }], 'completed'], [Object.create({ status: 'cancelled' }), 'completed'],
+  ]) {
+    value.control.dispatchResult = result;
+    const response = await value.post('/api/message', { type: 'fixtureAllowed' }, session);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, status: expected });
+  }
+});
+
+test('SSE readiness is an explicit provider frame after its complete bootstrap, never just HTTP success', async t => {
+  const value = await fixture(t); const session = await value.connect(); const ready = deferred();
+  value.control.connect = async send => {
+    value.control.callbacks.add(send); send({ type: 'officeBrowserBootstrap' }); await ready.promise;
+    send({ type: 'officeDeskState', state: { ready: true } }); send({ type: 'officeBrowserReady' });
+    return { dispose() { value.control.callbacks.delete(send); value.control.disposals++; } };
+  };
+  t.after(() => ready.resolve());
+  const stream = await value.events(session);
+  assert.deepEqual(await stream.next(), { type: 'officeBrowserBootstrap' });
+  let completed = false; const waiting = stream.next().then(frame => { completed = true; return frame; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(completed, false);
+  ready.resolve();
+  assert.deepEqual(await waiting, { type: 'officeDeskState', state: { ready: true } });
+  assert.deepEqual(await stream.next(), { type: 'officeBrowserReady' });
+  await stream.close(); await until(() => value.control.disposals === 1);
+});
+
+test('bootstrap rejection sends a fixed safe connection error before ending SSE', async t => {
+  const value = await fixture(t); const session = await value.connect();
+  value.control.connect = async send => { send({ type: 'officeBrowserBootstrap' }); throw new Error('FABRICATED-PRIVATE-BOOTSTRAP-DETAIL'); };
+  const stream = await value.events(session);
+  assert.deepEqual(await stream.next(), { type: 'officeBrowserBootstrap' });
+  assert.deepEqual(await stream.next(), { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+  assert.equal(await stream.next(), undefined);
+  await stream.close();
+});
+
+test('bootstrap timeout sends the safe connection error and disposes a late provider subscription', async t => {
+  const value = await fixture(t); const session = await value.connect(); value.control.connectGate = deferred();
+  const stream = await value.events(session); assert.equal((await stream.next()).type, 'bootstrap');
+  assert.deepEqual(await stream.next(12_000), { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+  assert.equal(await stream.next(), undefined);
+  value.control.connectGate.resolve(); await until(() => value.control.disposals === 1);
+  assert.equal(value.control.callbacks.size, 0); await stream.close();
 });

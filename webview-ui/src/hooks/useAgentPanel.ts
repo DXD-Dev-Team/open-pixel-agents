@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPanelAction, AgentPanelState } from '../components/AgentPanel.js'
 import type { OfficeState } from '../office/engine/officeState.js'
 import { isBrowserOffice, officeConnection, vscode } from '../vscodeApi.js'
+import type { BrowserActionState } from '../vscodeApi.js'
 
 interface PanelTarget { agentId: number; name: string; childName?: string }
 
@@ -11,13 +12,18 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
   const [states, setStates] = useState<Record<number, AgentPanelState>>({})
   const [errors, setErrors] = useState<Record<number, string>>({})
   const [drafts, setDrafts] = useState<Record<number, string>>({})
+  const [actionStates, setActionStates] = useState<Record<number, BrowserActionState>>({})
+  const requests = useRef(new Map<string, number>())
+  const latestRequests = useRef(new Map<number, string>())
+  const pendingRequests = useRef(new Set<string>())
   const requestIndex = useRef(0)
   const submissions = useRef(new Map<number, { text: string; previousIds: Set<string> }>())
   const postAction = useCallback((agentId: number, action: AgentPanelAction) => {
-    if (isBrowserOffice && !officeConnection.getSnapshot().connected) return
+    if (isBrowserOffice && !officeConnection.getSnapshot().connected) { setErrors(current => ({ ...current, [agentId]: 'Reconnect to VS Code before using agent controls.' })); return }
     const requestId = `office-${Date.now()}-${++requestIndex.current}`
-    vscode.postMessage({ type: 'officeAgentAction', agentId, requestId, ...action })
+    if (isBrowserOffice) requests.current.set(requestId, agentId)
     setErrors(current => ({ ...current, [agentId]: '' }))
+    vscode.postMessage({ type: 'officeAgentAction', agentId, requestId, ...action })
   }, [])
   const open = useCallback((id: number, request = true) => {
     const os = getOfficeState()
@@ -33,7 +39,21 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
     const handler = (event: MessageEvent) => {
       const message = event.data
       if (message.type === 'officeBrowserBootstrap' && isBrowserOffice) {
-        setStates({}); setErrors({}); submissions.current.clear()
+        setStates({}); setErrors({}); setActionStates({}); submissions.current.clear(); requests.current.clear(); latestRequests.current.clear(); pendingRequests.current.clear()
+      }
+      if (message.type === 'officeBrowserActionState' && isBrowserOffice) {
+        const result = message as BrowserActionState
+        const agentId = requests.current.get(result.requestId)
+        if (agentId !== undefined) {
+          if (result.state === 'pending') { latestRequests.current.set(agentId, result.requestId); pendingRequests.current.add(result.requestId) }
+          const latest = latestRequests.current.get(agentId)
+          // Stop can finish before an older Send settles. Only the user's most
+          // recent accepted action owns feedback. An immediate duplicate error
+          // cannot take ownership from the dialog already awaiting VS Code.
+          if (latest === result.requestId || result.state === 'failed' && !pendingRequests.current.has(result.requestId) && !pendingRequests.current.has(latest ?? '')) setActionStates(current => ({ ...current, [agentId]: result }))
+          if (latest === result.requestId && (result.state === 'completed' || result.state === 'cancelled')) setErrors(current => ({ ...current, [agentId]: '' }))
+          if (result.state !== 'pending') { requests.current.delete(result.requestId); pendingRequests.current.delete(result.requestId) }
+        }
       }
       if (message.type === 'existingAgents' && isBrowserOffice) {
         const ids = new Set<number>(message.agents)
@@ -58,6 +78,7 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
         setTarget(current => current?.agentId === message.id ? null : current)
         setStates(current => { const next = { ...current }; delete next[message.id]; return next })
         submissions.current.delete(message.id)
+        latestRequests.current.delete(message.id)
       }
     }
     window.addEventListener('message', handler)
@@ -73,5 +94,5 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
     if (target) setDrafts(current => ({ ...current, [target.agentId]: text }))
   }, [target])
   return { target, state: target ? states[target.agentId] : undefined, error: target ? errors[target.agentId] : undefined,
-    draft: target ? drafts[target.agentId] ?? '' : '', setDraft, open, action, close }
+    actionState: target ? actionStates[target.agentId] : undefined, draft: target ? drafts[target.agentId] ?? '' : '', setDraft, open, action, close }
 }

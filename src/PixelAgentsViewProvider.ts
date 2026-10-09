@@ -47,6 +47,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	runtimeController: RuntimeController | null = null;
 	isDisposing = false;
 	private initialization: Promise<void> | null = null;
+	private nativeReady = false;
 	private resolveReady: () => void = () => undefined;
 	private rejectReady: (error: Error) => void = () => undefined;
 	private ready = this.createReadyPromise();
@@ -130,6 +131,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					this.controller.postSnapshot();
 					for (const [agentId, state] of this.panelStates) { send({ type: 'officeAgentPanel', agentId, state }); }
 					send({ type: 'officeDeskState', state: this.browserDeskState });
+					send({ type: 'officeBrowserReady' });
 					return { dispose: () => { this.browserListeners.delete(send); } };
 				} catch (error) { this.browserListeners.delete(send); throw error; }
 			},
@@ -156,7 +158,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		this.broadcastBrowser({ type: 'officeDeskState', state: this.browserDeskState });
 	}
 
-	private async handleBrowserMessage(input: unknown): Promise<void> {
+	private async handleBrowserMessage(input: unknown): Promise<unknown> {
 		if (this.isDisposing) { throw new Error('The office is shutting down.'); }
 		if (!input || typeof input !== 'object' || Array.isArray(input)) { throw new Error('Invalid office message.'); }
 		const message = input as Record<string, unknown>;
@@ -165,18 +167,15 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			const agent = this.agents.get(action.agentId);
 			if (!agent?.readOnly || !agent.officeMetadata?.workerId) { throw new Error('Choose a managed office worker.'); }
 			if (action.action === 'open') {
-				await vscode.commands.executeCommand('office-desk.browserAction', { action: 'chatWorker', id: agent.officeMetadata.workerId, browser: true });
-			} else { this.bridgeEvents.fire(action); }
-			return;
+				return vscode.commands.executeCommand('office-desk.browserAction', { action: 'chatWorker', id: agent.officeMetadata.workerId, browser: true });
+			} else { return vscode.commands.executeCommand('office-desk.browserAgentAction', action); }
 		}
 		if (message.type === 'officeDeskAction') {
 			const safe = browserDeskAction(message);
-			await vscode.commands.executeCommand('office-desk.browserAction', safe);
-			return;
+			return vscode.commands.executeCommand('office-desk.browserAction', safe);
 		}
 		if (message.type === 'openAgentSession') {
-			await vscode.commands.executeCommand('office-desk.browserAction', { action: 'createWorker', browser: true });
-			return;
+			return vscode.commands.executeCommand('office-desk.browserAction', { action: 'createWorker', browser: true });
 		}
 		// This excludes native ACKs, seat/layout writes, snapshots and arbitrary commands.
 		throw new Error('This control is available only in the VS Code office.');
@@ -226,6 +225,24 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		void ready.catch(() => undefined);
 		return ready;
 	}
+	private beginInitialization(): Promise<void> | null {
+		if (this.initialization || !this.nativeReady || !this.webviewView) { return this.initialization; }
+		const view = this.webviewView;
+		const resolveReady = this.resolveReady;
+		const rejectReady = this.rejectReady;
+		const operation = this.bootstrapWebview();
+		this.initialization = operation;
+		void operation.then(resolveReady, error => {
+			rejectReady(new Error('Open Pixel Agents: Office initialization failed.'));
+			// A startup failure precedes restore and agent/asset mutation. Retrying
+			// this stage is safe; partial restore failures retain their failed state.
+			if (error instanceof OfficeStartupFailure && this.initialization === operation && this.webviewView === view && !this.isDisposing) {
+				this.initialization = null;
+				this.ready = this.createReadyPromise();
+			}
+		});
+		return operation;
+	}
 
 	private async ensureReady(show = true): Promise<void> {
 		if (this.isDisposing) {
@@ -235,6 +252,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
 			this.webviewView?.show(false);
 		}
+		this.beginInitialization();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
@@ -505,6 +523,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	resolveWebviewView(webviewView: vscode.WebviewView) {
 		for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 		this.webviewView = webviewView;
+		this.nativeReady = false;
 		webviewView.webview.options = { enableScripts: true };
 		webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
 		this.context.subscriptions.push(webviewView.onDidDispose(() => {
@@ -514,6 +533,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 			this.rejectReady(new Error('Open Pixel Agents: The office view was disposed.'));
 			this.webviewView = undefined;
+			this.nativeReady = false;
 			this.initialization = null;
 			this.ready = this.createReadyPromise();
 		}));
@@ -656,15 +676,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		} else if (message.type === 'setSoundEnabled') {
 			this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
 		} else if (message.type === 'webviewReady') {
-			if (!this.initialization) {
-				const resolveReady = this.resolveReady;
-				const rejectReady = this.rejectReady;
-				this.initialization = this.bootstrapWebview();
-				void this.initialization.then(resolveReady, () => {
-					rejectReady(new Error('Open Pixel Agents: Office initialization failed.'));
-				});
-			}
-			await this.initialization.catch(() => undefined);
+			this.nativeReady = true;
+			await this.beginInitialization()?.catch(() => undefined);
 		} else if (message.type === 'openSessionsFolder') {
 			const projectDir = getProjectDirPath();
 			if (projectDir && fs.existsSync(projectDir)) {
@@ -722,7 +735,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			} catch (error) {
 				this.output.appendLine(`[Open Pixel Agents] Failed to start OpenCode server: ${String(error)}`);
 				void vscode.window.showErrorMessage('Open Pixel Agents: Failed to start OpenCode server in the VS Code terminal. Check the "OpenCode Server" terminal and Open Pixel Agents output logs.');
-				throw new Error('Open Pixel Agents: OpenCode server startup failed.');
+				throw new OfficeStartupFailure('Open Pixel Agents: OpenCode server startup failed.');
 			}
 		}
 		await restoreAgents(
@@ -958,6 +971,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 
 const BROWSER_VIEW_MESSAGES = new Set(['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded', 'officeRepositories', 'existingAgents', 'agentCreated', 'agentClosed', 'runtimeSnapshot', 'agentRuntimeReplace', 'officeAgentPanel', 'officeAgentActionError', 'officeDeskState', 'officeAgentSeats']);
+class OfficeStartupFailure extends Error {}
 const BROWSER_DESK_ACTIONS = new Set(['createWorker', 'createManager', 'startWorker', 'abortWorker', 'closeWorker', 'chatWorker', 'openAgentChats', 'editWorker', 'removeWorker', 'focusAttention', 'permission', 'question', 'rejectQuestion', 'dismissAttention', 'addAccount', 'connectAccount', 'renameAccount', 'disconnectAccount', 'removeAccount', 'addRepository', 'removeRepository', 'showSetup']);
 const publicText = (value: unknown, limit = 100): string | undefined => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, limit) : undefined;
 const publicObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -981,6 +995,8 @@ export function browserDeskAction(input: Record<string, unknown>): Record<string
  if (input.id !== undefined) { if (typeof input.id !== 'string' || !input.id || input.id.length > 200 || /[\x00-\x1f\x7f]/.test(input.id)) { throw new Error('Choose an office item.'); } action.id = input.id; }
  if (input.kind !== undefined) { if (!['codex', 'claude', 'grok'].includes(String(input.kind))) { throw new Error('Choose an office provider.'); } action.kind = input.kind; }
  if (input.reply !== undefined) { if (!['once', 'always', 'reject'].includes(String(input.reply))) { throw new Error('Choose a permission reply.'); } action.reply = input.reply; }
+ if (input.name !== undefined && input.action === 'addAccount') { if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100 || /[\x00-\x1f\x7f]/.test(input.name)) { throw new Error('Choose an account name of 1–100 characters.'); } action.name = input.name.trim(); }
+ if (input.method !== undefined && ['addAccount', 'connectAccount'].includes(input.action)) { if (input.method !== 'api' && input.method !== 'oauth') { throw new Error('Choose API key or sign-in.'); } action.method = input.method; }
  return action;
 }
 
