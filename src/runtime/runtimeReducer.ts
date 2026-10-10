@@ -309,10 +309,29 @@ export function expireCompletions(store: RuntimeStore, now = Date.now()): number
 
 export function applyRuntimeEvent(store: RuntimeStore, event: RuntimeGlobalEvent, now = Date.now()): number[] {
 	const payload = event.payload;
-	if (!payload || typeof payload.type !== 'string') {
+	if (!payload || typeof payload.type !== 'string' || !payload.properties || typeof payload.properties !== 'object') {
 		return [];
 	}
 	const changed = new Set<number>();
+	if (payload.type === 'session.deleted') {
+		const info = payload.properties.info as Record<string, unknown> | undefined;
+		const sessionId = typeof info?.id === 'string' ? info.id : undefined;
+		const record = sessionId ? store.sessionsById.get(sessionId) : undefined;
+		if (!record) {
+			return [];
+		}
+		if (record.kind === 'root') {
+			unregisterRuntimeAgent(store, record.agentId);
+		} else {
+			store.sessionsById.delete(record.sessionId);
+			const agent = store.agentsById.get(record.agentId);
+			if (agent) {
+				agent.childSessionIds = agent.childSessionIds.filter((id) => id !== record.sessionId);
+				updateAgentDerived(store, record.agentId, now);
+			}
+		}
+		return [record.agentId];
+	}
 	if (payload.type === 'session.created') {
 		const info = payload.properties.info as Record<string, unknown> | undefined;
 		const childSessionId = typeof info?.id === 'string' ? info.id : undefined;

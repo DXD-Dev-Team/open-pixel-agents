@@ -73,6 +73,7 @@ export function useEditorActions(
     editorState.clearRedo()
     editorState.isDirty = true
     setIsDirty(true)
+    newLayout.officeDefault = false
     os.rebuildFromLayout(newLayout)
     saveLayout(newLayout)
     setEditorTick((n) => n + 1)
@@ -161,7 +162,8 @@ export function useEditorActions(
       const newLayout = { ...layout, tileColors: newColors }
       editorState.isDirty = true
       setIsDirty(true)
-      os.rebuildFromLayout(newLayout)
+      newLayout.officeDefault = false
+    os.rebuildFromLayout(newLayout)
       saveLayout(newLayout)
     }
     setEditorTick((n) => n + 1)
@@ -192,6 +194,7 @@ export function useEditorActions(
 
     editorState.isDirty = true
     setIsDirty(true)
+    newLayout.officeDefault = false
     os.rebuildFromLayout(newLayout)
     saveLayout(newLayout)
     setEditorTick((n) => n + 1)

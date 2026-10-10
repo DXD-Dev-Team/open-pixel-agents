@@ -1,5 +1,5 @@
 import { TileType, FurnitureType, DEFAULT_COLS, DEFAULT_ROWS, TILE_SIZE, Direction } from '../types.js'
-import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, Seat, FurnitureInstance, FloorColor } from '../types.js'
+import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, Seat, FurnitureInstance, FloorColor, OfficeZone, OfficeRepository } from '../types.js'
 import { getCatalogEntry } from './furnitureCatalog.js'
 import { getColorizedSprite } from '../colorize.js'
 
@@ -144,17 +144,25 @@ function getAdjacentDeskFacing(tileCol: number, tileRow: number, deskTiles: Set<
 
 /** Generate seats from chair furniture.
  *  Facing priority: 1) adjacent desk/work surface, 2) chair orientation, 3) forward (DOWN). */
-export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
+export function layoutToSeats(furniture: PlacedFurniture[], zones?: OfficeZone[]): Map<string, Seat> {
   const seats = new Map<string, Seat>()
 
   // Build set of all desk tiles
   const deskTiles = new Set<string>()
+  const computerDeskByTile = new Map<string, string>()
+  const computers = furniture.filter(item => {
+    const entry = getCatalogEntry(item.type)
+    return item.type === FurnitureType.PC || !!entry && entry.category === 'electronics' && /computer|monitor|laptop|\bpc\b/i.test(entry.label)
+  })
   for (const item of furniture) {
     const entry = getCatalogEntry(item.type)
     if (!entry || !entry.isDesk) continue
+    const hasComputer = computers.some(computer => computer.col >= item.col && computer.col < item.col + entry.footprintW &&
+      computer.row >= item.row && computer.row < item.row + entry.footprintH)
     for (let dr = 0; dr < entry.footprintH; dr++) {
       for (let dc = 0; dc < entry.footprintW; dc++) {
         deskTiles.add(`${item.col + dc},${item.row + dr}`)
+        if (hasComputer) computerDeskByTile.set(`${item.col + dc},${item.row + dr}`, item.uid)
       }
     }
   }
@@ -173,6 +181,9 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
 
         const deskFacing = getAdjacentDeskFacing(tileCol, tileRow, deskTiles)
         const isWorkSeat = deskFacing !== null
+        const facingDelta = deskFacing === Direction.UP ? [0, -1] : deskFacing === Direction.DOWN ? [0, 1]
+          : deskFacing === Direction.LEFT ? [-1, 0] : [1, 0]
+        const computerDeskId = deskFacing === null ? undefined : computerDeskByTile.get(`${tileCol + facingDelta[0]},${tileRow + facingDelta[1]}`)
 
         // Determine facing direction:
         // 1) Adjacent desk/work seat direction
@@ -193,6 +204,9 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
           seatRow: tileRow,
           facingDir,
           isWorkSeat,
+          computerDeskId,
+          repoId: zones?.find(zone => tileCol >= zone.col && tileCol < zone.col + zone.width && tileRow >= zone.row && tileRow < zone.row + zone.height)?.repoId,
+          role: zones?.find(zone => tileCol >= zone.col && tileCol < zone.col + zone.width && tileRow >= zone.row && tileRow < zone.row + zone.height)?.role,
           assigned: false,
         })
         seatCount++
@@ -233,6 +247,8 @@ export function createDefaultLayout(): OfficeLayout {
     for (let c = 0; c < DEFAULT_COLS; c++) {
       if (r === 0 || r === DEFAULT_ROWS - 1) { tiles.push(W); tileColors.push(null); continue }
       if (c === 0 || c === DEFAULT_COLS - 1) { tiles.push(W); tileColors.push(null); continue }
+      // Separate the three review/management rooms below the Build area.
+      if (r === 17 && ![3, 14, 25].includes(c) || r > 17 && (c === 11 || c === 22)) { tiles.push(W); tileColors.push(null); continue }
       if (c === 10) {
         if (r >= 4 && r <= 6) {
           tiles.push(F4); tileColors.push(DEFAULT_DOORWAY_COLOR)
@@ -253,26 +269,46 @@ export function createDefaultLayout(): OfficeLayout {
   }
 
   const furniture: PlacedFurniture[] = [
-    { uid: 'desk-left', type: FurnitureType.DESK, col: 4, row: 3 },
-    { uid: 'desk-right', type: FurnitureType.DESK, col: 13, row: 3 },
-    { uid: 'bookshelf-1', type: FurnitureType.BOOKSHELF, col: 1, row: 5 },
+    { uid: 'bookshelf-1', type: FurnitureType.BOOKSHELF, col: 1, row: 12 },
     { uid: 'plant-left', type: FurnitureType.PLANT, col: 1, row: 1 },
     { uid: 'cooler-1', type: FurnitureType.COOLER, col: 17, row: 7 },
     { uid: 'plant-right', type: FurnitureType.PLANT, col: 18, row: 1 },
     { uid: 'whiteboard-1', type: FurnitureType.WHITEBOARD, col: 15, row: 0 },
-    // Left desk chairs
-    { uid: 'chair-l-top', type: FurnitureType.CHAIR, col: 4, row: 2 },
-    { uid: 'chair-l-bottom', type: FurnitureType.CHAIR, col: 5, row: 5 },
-    { uid: 'chair-l-left', type: FurnitureType.CHAIR, col: 3, row: 4 },
-    { uid: 'chair-l-right', type: FurnitureType.CHAIR, col: 6, row: 3 },
-    // Right desk chairs
-    { uid: 'chair-r-top', type: FurnitureType.CHAIR, col: 13, row: 2 },
-    { uid: 'chair-r-bottom', type: FurnitureType.CHAIR, col: 14, row: 5 },
-    { uid: 'chair-r-left', type: FurnitureType.CHAIR, col: 12, row: 4 },
-    { uid: 'chair-r-right', type: FurnitureType.CHAIR, col: 15, row: 3 },
   ]
+  // The original hand-drawn assets provide a complete office without the
+  // optional furniture pack. Twelve computer desks leave room for children.
+  for (const [rowIndex, row] of [4, 12, 20, 28].entries()) {
+    for (const [colIndex, col] of [2, 13, 24].entries()) {
+      const suffix = `${rowIndex}-${colIndex}`
+      furniture.push({ uid: `desk-${suffix}`, type: FurnitureType.DESK, col, row },
+        { uid: `computer-${suffix}`, type: FurnitureType.PC, col, row },
+        { uid: `chair-${suffix}`, type: FurnitureType.CHAIR, col: col + 1, row: row + 2 })
+    }
+  }
 
-  return { version: 1, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, tiles, tileColors, furniture }
+  return { version: 1, officeDefault: true, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, tiles, tileColors, furniture, zones: [
+    { role: 'builder', label: 'BUILD', col: 1, row: 1, width: 30, height: 16 },
+    { role: 'security-reviewer', label: 'SECURITY', col: 1, row: 17, width: 10, height: 16 },
+    { role: 'verifier', label: 'VERIFICATION', col: 12, row: 17, width: 10, height: 16 },
+    { role: 'manager', label: 'MANAGEMENT', col: 23, row: 17, width: 8, height: 16 },
+  ] }
+}
+
+
+/** Repeat the existing office art; each repository owns its role desks. */
+export function createRepositoryLayout(repositories: OfficeRepository[]): OfficeLayout {
+  if (!repositories.length) return createDefaultLayout()
+  const room = createDefaultLayout()
+  const cols = room.cols * repositories.length
+  const tiles: OfficeLayout['tiles'] = []
+  const tileColors: NonNullable<OfficeLayout['tileColors']> = []
+  for (let row = 0; row < room.rows; row++) for (let index = 0; index < repositories.length; index++) for (let col = 0; col < room.cols; col++) {
+    tiles.push(room.tiles[row * room.cols + col])
+    tileColors.push(room.tileColors?.[row * room.cols + col] ?? null)
+  }
+  return { ...room, cols, tiles, tileColors,
+    furniture: repositories.flatMap((repo, index) => room.furniture.map(item => ({ ...item, uid: index ? `${repo.id}:${item.uid}` : item.uid, col: item.col + index * room.cols }))),
+    zones: repositories.flatMap((repo, index) => (room.zones ?? []).map(zone => ({ ...zone, repoId: repo.id, repoName: repo.name, label: zone.label, col: zone.col + index * room.cols }))) }
 }
 
 /** Serialize layout to JSON string */

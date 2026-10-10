@@ -4,23 +4,35 @@ import type { RuntimeAdapter, RuntimeGlobalEvent } from './runtimeAdapter.js';
 import { applyRuntimeEvent, expireCompletions, registerRuntimeAgent, replaceAgentSnapshot, unregisterRuntimeAgent } from './runtimeReducer.js';
 import { projectAgentVm, projectRuntimeSnapshot } from './runtimeProjector.js';
 import { createRuntimeStore } from './runtimeState.js';
+import { OfficeTelemetry } from './officeTelemetry.js';
+import type { OfficeWorkerMetadata } from '../officeBridge.js';
 
 export class RuntimeController {
 	private readonly store = createRuntimeStore();
 	private completionTimer: ReturnType<typeof setTimeout> | null = null;
+	private readonly office: OfficeTelemetry;
 
 	constructor(
 		private readonly runtime: RuntimeAdapter,
 		private readonly agents: Map<number, AgentState>,
 		private readonly webview: () => vscode.Webview | undefined,
-	) {}
+	) {
+		this.office = new OfficeTelemetry(agents);
+	}
 
 	registerAgent(agent: AgentState): void {
 		registerRuntimeAgent(this.store, agent);
+		this.office.register(agent);
 	}
 
 	removeAgent(agentId: number): void {
 		unregisterRuntimeAgent(this.store, agentId);
+		this.office.remove(agentId);
+	}
+
+	updateMetadata(agentId: number, patch: OfficeWorkerMetadata): void {
+		this.office.updateMetadata(agentId, patch);
+		this.postAgent(agentId);
 	}
 
 	async hydrateAll(): Promise<void> {
@@ -30,27 +42,50 @@ export class RuntimeController {
 			if (!agent.sessionId) {
 				return;
 			}
-			const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId);
+			const snapshot = await this.runtime.getSessionSnapshot(agent.sessionId, agent.projectDir);
 			replaceAgentSnapshot(this.store, agent, snapshot);
+			this.office.hydrate(agent, snapshot);
 		}));
+		if (this.runtime.getPendingInputEvents) {
+			for (const directory of new Set(agents.map(agent => agent.projectDir))) {
+				for (const event of await this.runtime.getPendingInputEvents(directory)) {
+					applyRuntimeEvent(this.store, event);
+					this.office.handleEvent(event);
+				}
+			}
+		}
 		this.store.phase = 'live';
 		this.postSnapshot();
 		this.armCompletionTimer();
 	}
 
-	handleEvent(event: RuntimeGlobalEvent): void {
-		const changed = applyRuntimeEvent(this.store, event);
+	handleEvent(event: RuntimeGlobalEvent): { agentId: number; sessionId: string } | undefined {
+		const props = event.payload?.properties ?? {};
+		const info = props.info as Record<string, unknown> | undefined;
+		const part = props.part as Record<string, unknown> | undefined;
+		const sessionId = typeof props.sessionID === 'string' ? props.sessionID
+			: typeof info?.sessionID === 'string' ? info.sessionID
+				: typeof part?.sessionID === 'string' ? part.sessionID
+					: event.payload?.type.startsWith('session.') && typeof info?.id === 'string' ? info.id : undefined;
+		const previousOwner = sessionId ? this.office.owner(sessionId) : undefined;
+		const changed = new Set(applyRuntimeEvent(this.store, event));
+		const officeAgent = this.office.handleEvent(event);
+		if (officeAgent !== undefined) {
+			changed.add(officeAgent);
+		}
 		for (const agentId of changed) {
 			this.postAgent(agentId);
 		}
 		this.armCompletionTimer();
+		const agentId = officeAgent ?? previousOwner;
+		return agentId !== undefined && sessionId ? { agentId, sessionId } : undefined;
 	}
 
 	postSnapshot(): void {
 		this.webview()?.postMessage({
 			type: 'runtimeSnapshot',
 			protocolVersion: 2,
-			agents: projectRuntimeSnapshot(this.store),
+			agents: projectRuntimeSnapshot(this.store).map((agent) => this.office.decorate(agent)),
 		});
 	}
 
@@ -62,7 +97,7 @@ export class RuntimeController {
 		this.webview()?.postMessage({
 			type: 'agentRuntimeReplace',
 			protocolVersion: 2,
-			agent,
+			agent: this.office.decorate(agent),
 		});
 	}
 
@@ -71,7 +106,7 @@ export class RuntimeController {
 			clearTimeout(this.completionTimer);
 			this.completionTimer = null;
 		}
-		let nextAt = Infinity;
+		let nextAt = this.office.nextSpeechExpiry() ?? Infinity;
 		const now = Date.now();
 		for (const record of this.store.sessionsById.values()) {
 			if (!record.completingUntil || record.completingUntil <= now) {
@@ -83,7 +118,7 @@ export class RuntimeController {
 			return;
 		}
 		this.completionTimer = setTimeout(() => {
-			const changed = expireCompletions(this.store);
+			const changed = new Set([...expireCompletions(this.store), ...this.office.expireSpeech()]);
 			for (const agentId of changed) {
 				this.postAgent(agentId);
 			}

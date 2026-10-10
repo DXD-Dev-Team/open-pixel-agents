@@ -8,7 +8,7 @@ import { TILE_SIZE, EditTool } from '../types.js'
 import { CAMERA_FOLLOW_LERP, CAMERA_FOLLOW_SNAP_THRESHOLD, ZOOM_MIN, ZOOM_MAX, ZOOM_SCROLL_THRESHOLD, PAN_MARGIN_FRACTION } from '../../constants.js'
 import { getCatalogEntry, isRotatable } from '../layout/furnitureCatalog.js'
 import { canPlaceFurniture, getWallPlacementRow } from '../editor/editorActions.js'
-import { vscode } from '../../vscodeApi.js'
+import { isBrowserOffice, vscode } from '../../vscodeApi.js'
 import { unlockAudio } from '../../notificationSound.js'
 
 interface OfficeCanvasProps {
@@ -220,6 +220,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
           officeState.getLayout().tileColors,
           officeState.getLayout().cols,
           officeState.getLayout().rows,
+          officeState.getLayout().zones,
         )
         offsetRef.current = { x: offsetX, y: offsetY }
 
@@ -585,7 +586,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       if (officeState.selectedAgentId !== null) {
         const selectedCh = officeState.characters.get(officeState.selectedAgentId)
         // Skip seat reassignment for sub-agents
-        if (selectedCh && !selectedCh.isSubagent) {
+        if (selectedCh && !selectedCh.isSubagent && !isBrowserOffice) {
           const tile = screenToTile(e.clientX, e.clientY)
           if (tile) {
             const seatId = officeState.getSeatAtTile(tile.col, tile.row)
@@ -640,7 +641,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
-    if (isEditMode) return
+    if (isEditMode || isBrowserOffice) return
     // Right-click to walk selected agent to tile
     if (officeState.selectedAgentId !== null) {
       const tile = screenToTile(e.clientX, e.clientY)
@@ -686,6 +687,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       }}
     >
       <canvas
+        data-office-canvas
         ref={canvasRef}
         onMouseMove={handleMouseMove}
         onMouseDown={handleMouseDown}

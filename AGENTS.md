@@ -173,7 +173,7 @@ These behaviors remain core to the project and are still accurate:
 - Matrix spawn/despawn effects
 - Sub-agent characters inherit parent palette/hue shift
 - Layout editor supports floor/wall/furniture placement, undo/redo, import/export
-- Layout is persisted at `~/.open-pixel-agents/layout.json`
+- Layout is persisted at `~/.office-pixel-agents/layout.json`
 
 ---
 

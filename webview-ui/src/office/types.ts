@@ -65,6 +65,10 @@ export interface Seat {
   facingDir: Direction
   /** Preferred for active work; typically adjacent to a desk */
   isWorkSeat: boolean
+  /** Desk containing a computer, when this chair faces one. */
+  role?: OfficeRole
+  repoId?: string
+  computerDeskId?: string
   assigned: boolean
 }
 
@@ -136,15 +140,39 @@ export interface PlacedFurniture {
   color?: FloorColor
 }
 
+export type OfficeRole = 'builder' | 'security-reviewer' | 'verifier' | 'manager'
+export interface OfficeRepository { id: string; name: string }
+export interface OfficeZone { repoId?: string; repoName?: string; role: OfficeRole; label: string; col: number; row: number; width: number; height: number }
+
 export interface OfficeLayout {
   version: 1
   layoutRevision?: number
   cols: number
   rows: number
+  zones?: OfficeZone[]
+  officeDefault?: boolean
   tiles: TileType[]
   furniture: PlacedFurniture[]
   /** Per-tile color settings, parallel to tiles array. null = wall/no color */
   tileColors?: Array<FloorColor | null>
+}
+
+export type OfficeStatus = 'needs input' | 'failed' | 'working' | 'reading' | 'waiting' | 'done' | 'idle'
+
+export interface OfficeLabel {
+  name: string
+  status: OfficeStatus
+  providerKind?: 'claude' | 'codex' | 'grok'
+  usageTokens?: number
+  estimatedCost?: number
+  needsInput: boolean
+  managed?: boolean
+  role?: OfficeRole
+  managerForRole?: 'all' | 'builder' | 'security-reviewer' | 'verifier'
+  repoId?: string
+  repoName?: string
+  managerRepoIds?: string[]
+  speech?: { text: string; expiresAt: number; source: 'assistant' | 'task' }
 }
 
 export interface Character {
@@ -186,6 +214,8 @@ export interface Character {
   bubbleType: 'permission' | 'waiting' | 'done' | null
   /** Countdown timer for bubble (waiting: 2→0, permission: unused) */
   bubbleTimer: number
+  /** The existing bubble is a persistent worker label, including while idle. */
+  officeLabel: OfficeLabel
   /** Timer to stay seated while inactive after seat reassignment (counts down to 0) */
   seatTimer: number
   /** Whether this character represents a sub-agent (spawned by Task tool) */

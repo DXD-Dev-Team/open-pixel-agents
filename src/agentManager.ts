@@ -5,6 +5,16 @@ import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { cancelWaitingTimer, cancelPermissionTimer } from './timerManager.js';
 import { WORKSPACE_KEY_AGENTS, WORKSPACE_KEY_AGENT_SEATS } from './constants.js';
 import { migrateAndLoadLayout } from './layoutPersistence.js';
+import { createReadOnlyAttachTerminal } from './officeBridge.js';
+import type { OfficeWorkerMetadata } from './officeBridge.js';
+import { isOfficeDeskManaged } from './opencodeClient.js';
+
+export interface AgentLaunchOptions {
+	displayName?: string;
+	readOnly?: boolean;
+	metadata?: OfficeWorkerMetadata;
+	reservationId?: number;
+}
 
 export function getProjectDirPath(cwd?: string): string | null {
 	const workspacePath = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -60,6 +70,7 @@ export async function launchNewTerminal(
 	persistAgents: () => void,
 	folderPath?: string,
 	output?: vscode.OutputChannel,
+	options?: AgentLaunchOptions,
 ): Promise<AgentState | undefined> {
 	const idx = nextTerminalIndexRef.current++;
 	const cwd = folderPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -67,17 +78,35 @@ export async function launchNewTerminal(
 		void vscode.window.showErrorMessage('Open Pixel Agents: No workspace folder found for OpenCode.');
 		return undefined;
 	}
+	if (options?.readOnly && process.platform !== 'darwin') {
+		throw new Error('Open Pixel Agents: The read-only attach spike currently requires macOS.');
+	}
+	if (isOfficeDeskManaged() && !options?.readOnly) {
+		throw new Error('Open Pixel Agents: Managed workers must use the Office Desk read-only creation path.');
+	}
 
 	await runtime.ensureServer(cwd, output);
 	const serverPort = runtime.getServerPort() ?? undefined;
 	const title = getAgentSessionTitle(cwd, idx);
-	const session = await runtime.createSession(title);
-	const terminal = vscode.window.createTerminal({
-		name: getAgentTerminalName(cwd, idx),
-		cwd,
-	});
+	const session = await runtime.createSession(title, cwd);
+	let terminal: vscode.Terminal;
+	try {
+		if (options?.readOnly) {
+			if (serverPort === undefined) {
+				throw new Error('Open Pixel Agents: The server has no resolved port.');
+			}
+			terminal = createReadOnlyAttachTerminal(options.displayName || getAgentTerminalName(cwd, idx), session.id, cwd, serverPort);
+		} else {
+			terminal = vscode.window.createTerminal({ name: getAgentTerminalName(cwd, idx), cwd });
+		}
+	} catch (error) {
+		await runtime.deleteSession(session.id, cwd).catch(() => undefined);
+		throw error;
+	}
 	terminal.show(true);
-	terminal.sendText(runtime.buildAttachCommand(session.id, cwd));
+	if (!options?.readOnly) {
+		terminal.sendText(runtime.buildAttachCommand(session.id, cwd));
+	}
 
 	const projectDir = getProjectDirPath(cwd);
 	if (!projectDir) {
@@ -87,12 +116,17 @@ export async function launchNewTerminal(
 
 	const id = nextAgentIdRef.current++;
 	const agent = createAgentState(id, terminal, projectDir, session.id, serverPort);
+	if (options?.readOnly) {
+		agent.readOnly = true;
+		agent.displayName = options.displayName;
+		agent.officeMetadata = options.metadata;
+	}
 
 	agents.set(id, agent);
 	activeAgentIdRef.current = id;
 	persistAgents();
 	console.log(`[Open Pixel Agents] Agent ${id}: created for OpenCode session ${session.id} on terminal ${terminal.name}`);
-	webview?.postMessage({ type: 'agentCreated', id });
+	webview?.postMessage({ type: 'agentCreated', id, ...(options?.readOnly ? { managed: true, reservationId: options.reservationId, role: options.metadata?.role ?? 'builder', managerForRole: options.metadata?.managerForRole, repoId: options.metadata?.repoId, repoName: options.metadata?.repoName } : {}) });
 	return agent;
 }
 
@@ -123,7 +157,7 @@ export function removeAgent(
 export function persistAgents(
 	agents: Map<number, AgentState>,
 	context: vscode.ExtensionContext,
-): void {
+): PromiseLike<void> {
 	const persisted: PersistedAgent[] = [];
 	for (const agent of agents.values()) {
 		persisted.push({
@@ -132,9 +166,10 @@ export function persistAgents(
 			sessionId: agent.sessionId,
 			projectDir: agent.projectDir,
 			serverPort: agent.serverPort,
+			...(agent.readOnly ? { readOnly: true, displayName: agent.displayName, officeMetadata: agent.officeMetadata } : {}),
 		});
 	}
-	context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
+	return context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
 }
 
 export async function restoreAgents(
@@ -159,30 +194,48 @@ export async function restoreAgents(
 	let maxIdx = 0;
 
 	for (const p of persisted) {
+		if (isOfficeDeskManaged() && !p.readOnly) {
+			output?.appendLine(`[Open Pixel Agents] Refusing writable legacy agent ${p.id} in Office Desk managed mode.`);
+			continue;
+		}
 		if (!p.sessionId) {
 			output?.appendLine(`[Open Pixel Agents] Skipping persisted agent ${p.id} with no session id`);
 			continue;
 		}
 
 		try {
-			await runtime.getSession(p.sessionId);
+			await runtime.getSession(p.sessionId, p.projectDir);
 		} catch (error) {
 			output?.appendLine(`[Open Pixel Agents] Removing stale persisted agent ${p.id}; session ${p.sessionId} is unavailable: ${String(error)}`);
 			continue;
 		}
 
-		let terminal = liveTerminals.find(t => t.name === p.terminalName);
+		// A managed session must never restore into an ordinary writable shell.
+		const existingAgent = agents.get(p.id);
+		let terminal = p.readOnly
+			? existingAgent?.readOnly && liveTerminals.includes(existingAgent.terminalRef) ? existingAgent.terminalRef : undefined
+			: liveTerminals.find(t => t.name === p.terminalName);
 		if (!terminal) {
-			terminal = vscode.window.createTerminal({
-				name: p.terminalName,
-				cwd: p.projectDir,
-			});
+			if (p.readOnly) {
+				const port = runtime.getServerPort();
+				if (port === null) {
+					throw new Error('Open Pixel Agents: The server has no resolved port for restore.');
+				}
+				terminal = createReadOnlyAttachTerminal(p.terminalName, p.sessionId, p.projectDir, port);
+			} else {
+				terminal = vscode.window.createTerminal({ name: p.terminalName, cwd: p.projectDir });
+				terminal.sendText(runtime.buildAttachCommand(p.sessionId, p.projectDir));
+			}
 			terminal.show(false);
-			terminal.sendText(runtime.buildAttachCommand(p.sessionId, p.projectDir));
 			output?.appendLine(`[Open Pixel Agents] Reattached persisted agent ${p.id} to session ${p.sessionId}`);
 		}
 
-		const agent = createAgentState(p.id, terminal, p.projectDir, p.sessionId, p.serverPort);
+		const agent = createAgentState(p.id, terminal, p.projectDir, p.sessionId, runtime.getServerPort() ?? p.serverPort);
+		if (p.readOnly) {
+			agent.readOnly = true;
+			agent.displayName = p.displayName;
+			agent.officeMetadata = p.officeMetadata;
+		}
 
 		agents.set(p.id, agent);
 		console.log(`[Open Pixel Agents] Restored agent ${p.id} → terminal "${p.terminalName}" session=${p.sessionId ?? 'unknown'}`);
@@ -196,6 +249,9 @@ export async function restoreAgents(
 			if (idx > maxIdx) {
 				maxIdx = idx;
 			}
+		}
+		if (p.readOnly && p.id > maxIdx) {
+			maxIdx = p.id;
 		}
 
 	}
