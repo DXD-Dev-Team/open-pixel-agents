@@ -29,6 +29,8 @@ const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inl
 
 export interface BrowserOfficeServerOptions {
 	assetsDirectory: string;
+	/** Zero is reserved for disposable fixtures; the extension supplies a stable port. */
+	port?: number;
 	connect(send: (message: unknown) => void): Promise<{ dispose(): void | Promise<void> }>;
 	dispatch(message: unknown): Promise<unknown>;
 }
@@ -93,6 +95,8 @@ export class BrowserOfficeServer {
 	}
 
 	private async listen(): Promise<void> {
+		const port = this.options.port === undefined ? 0 : this.options.port;
+		if (!Number.isInteger(port) || port < 0 || port > 65535) { throw new Error('Choose a valid Browser Office port.'); }
 		this.assetsRoot = await realpath(this.options.assetsDirectory);
 		if (!(await stat(this.assetsRoot)).isDirectory()) { throw new Error('The browser office assets are unavailable.'); }
 		if (this.disposed) { throw new Error('The browser office is closed.'); }
@@ -114,9 +118,14 @@ export class BrowserOfficeServer {
 		});
 		server.on('clientError', (_error, socket) => { socket.destroy(); });
 		await new Promise<void>((resolve, reject) => {
-			server.once('error', reject);
-			server.listen(0, '127.0.0.1', () => {
-				server.off('error', reject);
+			const onError = (error: Error): void => {
+				server.off('listening', onListening);
+				reject((error as NodeJS.ErrnoException).code === 'EADDRINUSE'
+					? new Error(`Browser Office port ${port} is already in use. Change the Browser Office port in this workspace’s settings and reload VS Code, then reopen the Office.`)
+					: new Error('Browser Office could not open its local port.'));
+			};
+			const onListening = (): void => {
+				server.off('error', onError);
 				server.on('error', () => { void this.dispose(); });
 				const address = server.address();
 				if (!address || typeof address === 'string' || address.address !== '127.0.0.1') {
@@ -124,7 +133,10 @@ export class BrowserOfficeServer {
 				}
 				this.origin = `http://127.0.0.1:${address.port}`;
 				resolve();
-			});
+			};
+			server.once('error', onError);
+			try { server.listen(port, '127.0.0.1', onListening); }
+			catch (error) { server.off('error', onError); onError(error as Error); }
 		});
 	}
 	private async closeListener(): Promise<void> {

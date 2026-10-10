@@ -342,7 +342,7 @@ export class OfficeTelemetry {
 			record.permissions.clear();
 			record.questions.clear();
 			record.manualNeedsInput = false;
-			record.manualStatus = undefined;
+			if (!this.agents.get(record.agentId)?.readOnly) { record.manualStatus = undefined; }
 		} else if (payload.type === 'message.updated') {
 			this.reduceMessage(record, info);
 		} else if (payload.type === 'message.part.updated') {
@@ -360,15 +360,21 @@ export class OfficeTelemetry {
 		return record.agentId;
 	}
 
+	private managedStatus(record: OfficeSession): OfficeStatus | undefined {
+		return !record.parentId && this.agents.get(record.agentId)?.readOnly ? record.manualStatus : undefined;
+	}
+
 	private status(record: OfficeSession): OfficeStatus {
 		if (record.permissions.size || record.questions.size || record.manualNeedsInput || record.manualStatus === 'needs input') {
 			return 'needs input';
 		}
+		// The companion tracks the current turn/queue/abort lifecycle. Restored
+		// message errors and late SSE frames describe older turns, so they cannot
+		// override its explicit managed root status, including current tool work.
+		const managed = this.managedStatus(record);
+		if (managed) { return managed; }
 		if (record.failed || record.manualStatus === 'failed') {
 			return 'failed';
-		}
-		if (this.agents.get(record.agentId)?.readOnly && record.manualStatus && !['working', 'reading'].includes(record.manualStatus)) {
-			return record.manualStatus;
 		}
 		if (record.tools.size) {
 			return [...record.tools.values()].every((tool) => readingTools.has(tool.toLowerCase())) ? 'reading' : 'working';
@@ -392,7 +398,10 @@ export class OfficeTelemetry {
 		if (currentChildren) {
 			for (const child of this.sessions.values()) {
 				if (child.agentId === record.agentId && child.parentId && (currentChildren.has(child.sessionId) || child.permissions.size || child.questions.size || child.tools.size || child.status?.type === 'busy' || child.status?.type === 'retry')) {
-					statuses.push(this.status(child));
+					const childStatus = this.status(child);
+					// The managed worker snapshot already includes its children's turn
+					// state. Only a newly arrived unresolved ask can outrank it here.
+					if (!this.managedStatus(record) || childStatus === 'needs input') { statuses.push(childStatus); }
 				}
 			}
 		}

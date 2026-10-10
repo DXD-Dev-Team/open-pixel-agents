@@ -75,7 +75,7 @@ export function normalizeAgentPanel(input: unknown): OfficeAgentPanelState {
 			repoIds: Array.isArray(manager.repoIds) ? [...new Set(manager.repoIds.slice(0, 8).map(value => label(value)))] : [],
 			teamIds: Array.isArray(manager.teamIds) ? [...new Set(manager.teamIds.slice(0, OFFICE_PANEL_TEAM_LIMIT).map(value => label(value)))] : [],
 			team: Array.isArray(manager.team) ? manager.team.slice(0, OFFICE_PANEL_TEAM_LIMIT).map(value => {
-				const member = record(value); return { id: label(member.id), name: label(member.name, 100), role: officeRole(member.role) };
+				const member = record(value); return { id: label(member.id), name: label(member.name, 100), role: officeRole(member.role), ...(member.repoId ? { repoId: label(member.repoId) } : {}), ...(member.repoName ? { repoName: label(member.repoName, 100) } : {}) };
 			}) : [], proposals: Array.isArray(manager.proposals) ? manager.proposals.slice(-OFFICE_PANEL_CHAT_LIMIT).map(value => {
 				const proposal = record(value);
 				const status = ['pending', 'approved', 'rejected', 'running', 'done', 'failed'].includes(String(proposal.status)) ? proposal.status as 'pending' | 'approved' | 'rejected' | 'running' | 'done' | 'failed' : 'pending';

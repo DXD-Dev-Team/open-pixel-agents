@@ -47,10 +47,12 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
         if (agentId !== undefined) {
           if (result.state === 'pending') { latestRequests.current.set(agentId, result.requestId); pendingRequests.current.add(result.requestId) }
           const latest = latestRequests.current.get(agentId)
+          const accepted = pendingRequests.current.has(result.requestId)
           // Stop can finish before an older Send settles. Only the user's most
           // recent accepted action owns feedback. An immediate duplicate error
           // cannot take ownership from the dialog already awaiting VS Code.
           if (latest === result.requestId || result.state === 'failed' && !pendingRequests.current.has(result.requestId) && !pendingRequests.current.has(latest ?? '')) setActionStates(current => ({ ...current, [agentId]: result }))
+          if (result.state === 'failed' && (latest === result.requestId || !accepted)) setErrors(current => ({ ...current, [agentId]: result.error ?? 'The action could not be completed.' }))
           if (latest === result.requestId && (result.state === 'completed' || result.state === 'cancelled')) setErrors(current => ({ ...current, [agentId]: '' }))
           if (result.state !== 'pending') { requests.current.delete(result.requestId); pendingRequests.current.delete(result.requestId) }
         }
@@ -73,7 +75,9 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
           submissions.current.delete(agentId)
         }
       }
-      if (message.type === 'officeAgentActionError') setErrors(current => ({ ...current, [message.agentId]: String(message.error ?? 'The action could not be completed.') }))
+      // Browser request failures already pass through the correlated result
+      // above. A delayed failed Send must not overwrite a newer successful Stop.
+      if (message.type === 'officeAgentActionError' && (!isBrowserOffice || !message.requestId)) setErrors(current => ({ ...current, [message.agentId]: String(message.error ?? 'The action could not be completed.') }))
       if (message.type === 'agentClosed') {
         setTarget(current => current?.agentId === message.id ? null : current)
         setStates(current => { const next = { ...current }; delete next[message.id]; return next })
@@ -86,6 +90,13 @@ export function useAgentPanel(getOfficeState: () => OfficeState) {
   }, [open])
   const action = useCallback((input: AgentPanelAction) => {
     if (!target) return
+    if (isBrowserOffice && input.action === 'add-account') {
+      const workerId = states[target.agentId]?.worker.id
+      if (!workerId) return
+      setTarget(null)
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'officeBrowserAccountForm', kind: input.kind, workerId } }))
+      return
+    }
     if (input.action === 'send' && input.text) submissions.current.set(target.agentId, { text: input.text.trim(), previousIds: new Set(states[target.agentId]?.chat.map(item => item.id)) })
     postAction(target.agentId, input)
   }, [target, states, postAction])

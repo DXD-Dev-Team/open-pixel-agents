@@ -47,6 +47,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	runtimeController: RuntimeController | null = null;
 	isDisposing = false;
 	private initialization: Promise<void> | null = null;
+	private initialized = false;
+	private nativeHandshakeIndex = 0;
 	private nativeReady = false;
 	private resolveReady: () => void = () => undefined;
 	private rejectReady: (error: Error) => void = () => undefined;
@@ -112,6 +114,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		await this.ensureReady(false);
 		this.browserServer ??= new BrowserOfficeServer({
 			assetsDirectory: path.join(this.extensionUri.fsPath, 'dist', 'webview'),
+			port: vscode.workspace.getConfiguration('office-pixel-agents').get<number>('browserPort', 18084),
 			connect: async send => {
 				await this.ensureReady(false);
 				if (this.isDisposing) { throw new Error('The office is shutting down.'); }
@@ -227,16 +230,18 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 	private beginInitialization(): Promise<void> | null {
 		if (this.initialization || !this.nativeReady || !this.webviewView) { return this.initialization; }
-		const view = this.webviewView;
+		// A new renderer shares the already-owned runtime and registered agents.
+		// Its handshake replays view state instead of restoring sessions again.
+		if (this.initialized) { this.initialization = Promise.resolve(); return this.initialization; }
 		const resolveReady = this.resolveReady;
 		const rejectReady = this.rejectReady;
 		const operation = this.bootstrapWebview();
 		this.initialization = operation;
-		void operation.then(resolveReady, error => {
+		void operation.then(() => { this.initialized = true; resolveReady(); }, error => {
 			rejectReady(new Error('Open Pixel Agents: Office initialization failed.'));
 			// A startup failure precedes restore and agent/asset mutation. Retrying
 			// this stage is safe; partial restore failures retain their failed state.
-			if (error instanceof OfficeStartupFailure && this.initialization === operation && this.webviewView === view && !this.isDisposing) {
+			if (error instanceof OfficeStartupFailure && this.initialization === operation && !this.isDisposing) {
 				this.initialization = null;
 				this.ready = this.createReadyPromise();
 			}
@@ -248,7 +253,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		if (this.isDisposing) {
 			throw new Error('Open Pixel Agents: The office is shutting down.');
 		}
-		if (show || !this.initialization) {
+		if (show || !this.initialization || !this.webviewView || !this.nativeReady) {
 			await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
 			this.webviewView?.show(false);
 		}
@@ -534,7 +539,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			this.rejectReady(new Error('Open Pixel Agents: The office view was disposed.'));
 			this.webviewView = undefined;
 			this.nativeReady = false;
-			this.initialization = null;
+			// Initialization belongs to this provider's runtime lifetime. A view
+			// disposed during restore must not launch a second overlapping restore.
 			this.ready = this.createReadyPromise();
 		}));
 
@@ -676,8 +682,16 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		} else if (message.type === 'setSoundEnabled') {
 			this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
 		} else if (message.type === 'webviewReady') {
+			const view = this.webviewView;
+			const handshake = ++this.nativeHandshakeIndex;
+			const replay = this.initialized || this.initialization !== null;
 			this.nativeReady = true;
-			await this.beginInitialization()?.catch(() => undefined);
+			try {
+				await this.beginInitialization();
+				if (this.isDisposing || !view || this.webviewView !== view || handshake !== this.nativeHandshakeIndex) { return; }
+				if (replay) { this.replayNativeView(view.webview); }
+				this.resolveReady();
+			} catch { if (this.initialization) { this.rejectReady(new Error('Open Pixel Agents: Office initialization failed.')); } }
 		} else if (message.type === 'openSessionsFolder') {
 			const projectDir = getProjectDirPath();
 			if (projectDir && fs.existsSync(projectDir)) {
@@ -720,6 +734,22 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				vscode.window.showErrorMessage('Open Pixel Agents: Failed to read or parse layout file.');
 			}
 		}
+	}
+
+	/** Fresh native React documents need the same assets and current characters.
+	 * Replay through the native sink so browser selections and modals stay local. */
+	private replayNativeView(webview: vscode.Webview): void {
+		void webview.postMessage({ type: 'settingsLoaded', soundEnabled: this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true) });
+		const folders = vscode.workspace.workspaceFolders;
+		if (folders && folders.length > 1) { void webview.postMessage({ type: 'workspaceFolders', folders: folders.map(folder => ({ name: folder.name, path: folder.uri.fsPath })) }); }
+		if (this.repositories.length) { void webview.postMessage({ type: 'officeRepositories', requestId: 0, repositories: this.repositories }); }
+		sendExistingAgents(this.agents, this.context, webview);
+		for (const type of ['characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded']) {
+			const message = this.browserBootstrap.get(type);
+			if (message) { void webview.postMessage(message); }
+		}
+		this.controller.postSnapshot();
+		for (const [agentId, state] of this.panelStates) { void webview.postMessage({ type: 'officeAgentPanel', agentId, state }); }
 	}
 
 	private async bootstrapWebview(): Promise<void> {
@@ -980,9 +1010,12 @@ const publicRows = (value: unknown, limit = 200): Record<string, unknown>[] => A
 /** Explicit fields prevent OpenCode URLs, repository paths and credentials entering the browser roster. */
 export function browserDeskState(input: unknown): Record<string, unknown> {
  const state = publicObject(input);
+ const login = publicObject(state.login);
  return { ready: state.ready === true, error: publicText(state.error, 1000), setupNeeded: publicObject(state.setup).complete === false,
+  ...(typeof login.accountId === 'string' && ['browser', 'device'].includes(String(login.kind)) ? { login: { accountId: publicText(login.accountId), kind: login.kind, instructions: publicText(login.instructions, 1000) } } : {}),
   accounts: publicRows(state.accounts).map(account => ({ id: publicText(account.id), name: publicText(account.name), kind: publicText(account.kind), connected: account.connected === true, authType: publicText(account.authType), loginName: publicText(account.loginName, 160) })),
   repositories: publicRows(state.repositories, 8).map(repo => ({ id: publicText(repo.id), name: publicText(repo.name), readOnly: repo.readOnly === true })),
+  modelOptions: publicRows(state.modelOptions, 5000).map(model => ({ repoId: publicText(model.repoId, 200), accountId: publicText(model.accountId, 200), modelId: publicText(model.modelId, 200), name: publicText(model.name, 200) })),
   attention: publicRows(state.attention).map(item => ({ id: publicText(item.id), workerId: publicText(item.workerId), workerName: publicText(item.workerName), kind: publicText(item.kind), ask: publicText(item.ask, 4000) })),
   workers: publicRows(state.workers).map(item => { const worker = publicObject(item.definition), binding = publicObject(item.binding), manager = publicObject(worker.manager); return {
    id: publicText(worker.id), name: publicText(worker.name), accountId: publicText(worker.accountId), providerId: publicText(worker.providerId), modelId: publicText(worker.modelId), role: publicText(worker.role) ?? 'builder', repoId: publicText(worker.repoId) ?? 'workspace', status: publicText(item.status), error: publicText(item.error, 1000), agentId: Number.isInteger(binding.agentId) && Number(binding.agentId) > 0 ? binding.agentId : undefined, manager: worker.role === 'manager', managerMode: publicText(manager.mode),
@@ -997,7 +1030,30 @@ export function browserDeskAction(input: Record<string, unknown>): Record<string
  if (input.reply !== undefined) { if (!['once', 'always', 'reject'].includes(String(input.reply))) { throw new Error('Choose a permission reply.'); } action.reply = input.reply; }
  if (input.name !== undefined && input.action === 'addAccount') { if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100 || /[\x00-\x1f\x7f]/.test(input.name)) { throw new Error('Choose an account name of 1–100 characters.'); } action.name = input.name.trim(); }
  if (input.method !== undefined && ['addAccount', 'connectAccount'].includes(input.action)) { if (input.method !== 'api' && input.method !== 'oauth') { throw new Error('Choose API key or sign-in.'); } action.method = input.method; }
+ if (input.workerId !== undefined && input.action === 'addAccount') { if (typeof input.workerId !== 'string' || !input.workerId || input.workerId.length > 200 || /[\x00-\x1f\x7f]/.test(input.workerId)) { throw new Error('Choose an office agent.'); } action.workerId = input.workerId; }
+ if (['createWorker', 'createManager'].includes(input.action) && ['accountId', 'modelId', 'repoId', 'role', 'mode', 'manager'].some(key => input[key] !== undefined)) {
+  for (const key of ['accountId', 'modelId', 'repoId']) { action[key] = browserItemId(input[key]); }
+  if (!['builder', 'security-reviewer', 'verifier', 'manager'].includes(String(input.role)) || (input.action === 'createManager') !== (input.role === 'manager')) { throw new Error('Choose an office role.'); }
+  if (!['fast', 'reasoning'].includes(String(input.mode))) { throw new Error('Choose Fast or Reasoning.'); }
+  action.role = input.role; action.mode = input.mode;
+  if (input.name !== undefined) { if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100 || /[\x00-\x1f\x7f]/.test(input.name)) { throw new Error('Choose an agent name of 1–100 characters.'); } action.name = input.name.trim(); }
+  if (input.role === 'manager') {
+   const manager = publicObject(input.manager);
+   if (!['auto', 'human-approval'].includes(String(manager.mode)) || !['all', 'builder', 'security-reviewer', 'verifier'].includes(String(manager.scopeRole))) { throw new Error('Choose manager approval and team roles.'); }
+   const repoIds = browserItemIds(manager.repoIds, 8), teamIds = browserItemIds(manager.teamIds, 100);
+   if (!repoIds.length || !repoIds.includes(String(action.repoId))) { throw new Error('Include the manager’s home repository.'); }
+   action.manager = { mode: manager.mode, scopeRole: manager.scopeRole, repoIds, teamIds };
+  }
+ }
  return action;
+}
+function browserItemId(input: unknown): string {
+ if (typeof input !== 'string' || !input || input.length > 200 || /[\x00-\x1f\x7f]/.test(input)) { throw new Error('Choose an existing office item.'); }
+ return input;
+}
+function browserItemIds(input: unknown, limit: number): string[] {
+ if (!Array.isArray(input) || input.length > limit) { throw new Error('Choose existing office items.'); }
+ return [...new Set(input.map(browserItemId))];
 }
 
 export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri): string {

@@ -405,15 +405,74 @@ test('a failed loopback listen releases its failed server before a subsequent re
     connect: async () => ({ dispose() {} }), dispatch: async () => {} });
   t.after(() => retry.dispose());
   const attempts = await Promise.allSettled([retry.start(), retry.start()]);
-  assert(attempts.every(attempt => attempt.status === 'rejected' && attempt.reason.code === 'EADDRINUSE'));
+  assert(attempts.every(attempt => attempt.status === 'rejected' && /port .*already in use.*workspace.*settings/i.test(attempt.reason.message)));
   assert.equal(servers.length, 1, 'Concurrent launches must share one initial listener attempt.');
   assert.equal(servers[0].listening, false);
   const recovered = new URL((await retry.start()).url);
   assert.equal(recovered.hostname, '127.0.0.1'); assert.notEqual(recovered.port, value.url.port);
   assert.equal((await fetch(recovered.origin)).status, 200);
   assert.equal(servers.length, 2);
+  assert.equal(servers[1].listenerCount('error'), 1, 'After a successful bind only the runtime error handler may remain.');
   await retry.dispose(); assert(servers.every(server => !server.listening));
   await assert.rejects(fetch(recovered.origin));
+});
+
+test('a replacement Office binds the same configured port while revoking old launch links and browser cookies', async t => {
+  const value = await fixture(t); const oldSession = await value.connect();
+  const port = Number(value.url.port);
+  await value.server.dispose();
+  const replacement = new BrowserOfficeServer({ assetsDirectory: value.assetsDirectory, port,
+    connect: send => value.control.connect(send), dispatch: async message => {value.control.messages.push(message);} });
+  t.after(() => replacement.dispose());
+  const launch = new URL((await replacement.start()).url);
+  assert.equal(launch.origin, value.origin, 'Restart must retain the chosen port instead of silently choosing another origin.');
+  assert(launch.hash !== value.url.hash, 'A restart must issue a fresh launch capability.');
+  assert.equal((await fetch(value.origin)).status, 200);
+  assert.equal((await value.post('/api/connect', {}, oldSession)).status, 401);
+  assert.equal((await value.post('/api/connect', {token:value.capability}, oldSession)).status, 401);
+  const response = await value.post('/api/connect', {token:new URLSearchParams(launch.hash.slice(1)).get('office-token')}, oldSession);
+  assert.equal(response.status, 200);
+  const session = {cookie:response.headers.get('set-cookie').split(';')[0], csrf:(await response.json()).csrf};
+  assert(session.cookie !== oldSession.cookie);
+  assert.equal((await value.post('/api/message', {type:'fixtureAllowed'}, session)).status, 200);
+  assert.equal(value.control.messages.length, 1);
+  await replacement.dispose();
+  await assert.rejects(fetch(value.origin, {signal:AbortSignal.timeout(1000)}));
+});
+
+test('an occupied configured port fails closed without attaching, falling back, or disturbing its current owner', async t => {
+  const value = await fixture(t); let connections = 0; let dispatches = 0;
+  const retry = new BrowserOfficeServer({ assetsDirectory:value.assetsDirectory, port:Number(value.url.port),
+    connect:async () => {connections++;return {dispose() {}};}, dispatch:async () => {dispatches++;} });
+  t.after(() => retry.dispose());
+  const attempts = await Promise.allSettled([retry.start(),retry.start()]);
+  assert(attempts.every(attempt => attempt.status === 'rejected' &&
+    attempt.reason.message.includes(value.url.port) && /already in use.*workspace.*settings.*reload/i.test(attempt.reason.message)));
+  assert.equal(connections, 0); assert.equal(dispatches, 0);
+  const owner = await fetch(value.origin);
+  assert.equal(owner.status, 200); assert((await owner.text()).includes('Local office fixture'));
+  const session = await value.connect();
+  assert.equal((await value.post('/api/message', {type:'fixtureAllowed'}, session)).status, 200);
+  await value.server.dispose();
+  const recovered = new URL((await retry.start()).url);
+  assert.equal(recovered.origin, value.origin, 'Retry may use the exact port only after its prior owner has closed.');
+  await retry.dispose();
+  await assert.rejects(fetch(value.origin, {signal:AbortSignal.timeout(1000)}));
+});
+
+test('invalid configured ports reject before exposing a listener or invoking the provider boundary', async t => {
+  const value = await fixture(t);
+  for (const port of [-1,65536,1.25,NaN,Infinity,'18084',null,true]) {
+    let connected = false;
+    const invalid = new BrowserOfficeServer({assetsDirectory:path.join(value.directory,'missing-before-port-validation'),port,
+      connect:async () => {connected=true;return {dispose() {}};},dispatch:async () => {assert.fail('An invalid port cannot dispatch.');} });
+    try {
+      await assert.rejects(invalid.start(), /valid Browser Office port/);
+      await assert.rejects(invalid.start(), /valid Browser Office port/, 'Repeated invalid configuration must not cache an unusable listener attempt.');
+      assert.equal(connected, false);
+    } finally {await invalid.dispose();}
+  }
+  assert.equal((await fetch(value.origin)).status, 200, 'Invalid instances must leave the fixture owner untouched.');
 });
 
 test('message responses preserve only explicit completed or cancelled status and never dispatch output', async t => {

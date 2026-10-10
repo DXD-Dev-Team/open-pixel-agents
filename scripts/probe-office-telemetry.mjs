@@ -122,3 +122,55 @@ assert.equal(retired().officeLabel.status, 'needs input', 'An unresolved child r
 event('question.replied', { sessionID: 'child', requestID: 'still-pending' });
 assert.equal(retired().officeLabel.status, 'done');
 console.log('PASS: retired child failures stop affecting parent status; actual unresolved child requests remain visible.');
+
+const managedAgent = { id: 2, sessionId: 'managed-root', readOnly: true, displayName: 'Current worker',
+  officeMetadata: { workerId: 'worker-current', providerKind: 'codex', status: 'idle', needsInput: false } };
+const managedTelemetry = new OfficeTelemetry(new Map([[2, managedAgent]]));
+const oldError = { id: 'old-invalid-model', sessionID: 'managed-root', role: 'assistant',
+  time: { created: 1, completed: 2 }, error: { name: 'ModelNotFoundError' }, tokens: { input: 3, output: 2 } };
+const managedSnapshot = { sessionId: 'managed-root', status: { type: 'idle' }, messages: [{ info: oldError,
+  parts: [{ id: 'old-read', sessionID: 'managed-root', type: 'tool', tool: 'read', state: { status: 'running' } }] }],
+  children: [{ info: { id: 'old-child', parentID: 'managed-root' }, status: { type: 'idle' },
+    messages: [{ info: { ...oldError, id: 'old-child-error', sessionID: 'old-child' }, parts: [] }] }] };
+const managedVm = () => managedTelemetry.decorate({ agentId: 2, sessionId: 'managed-root', status: 'waiting', permissionAsked: false, tools: [],
+  subagents: [{ id: 'old-child', sessionId: 'old-child', label: 'Old child', status: 'waiting', permissionAsked: false, tools: [] }] });
+const managedEvent = (type, properties) => managedTelemetry.handleEvent({ directory: '/workspace', payload: { type, properties } });
+managedTelemetry.hydrate(managedAgent, managedSnapshot);
+assert.equal(managedVm().officeLabel.status, 'idle', 'A restored invalid-model failure must not override the current managed idle snapshot.');
+assert.equal(managedVm().officeLabel.usageTokens, 5, 'Historical usage is retained while historical failure status is superseded.');
+assert.equal(managedVm().subagents[0].officeLabel.status, 'failed', 'Child session detail is retained without pinning its authoritative parent as failed.');
+managedTelemetry.updateMetadata(2, { status: 'working' });
+assert.equal(managedVm().officeLabel.status, 'working', 'A current active turn remains working even when history contains an error and unfinished reading tool.');
+managedEvent('message.part.updated', { part: { id: 'current-read', sessionID: 'managed-root', type: 'tool', tool: 'read', state: { status: 'running' } } });
+assert.equal(managedVm().officeLabel.status, 'working', 'Live raw tool work must await the companion current-turn status rather than override it.');
+managedTelemetry.updateMetadata(2, { status: 'reading' });
+assert.equal(managedVm().officeLabel.status, 'reading');
+managedEvent('session.idle', { sessionID: 'managed-root' });
+assert.equal(managedVm().officeLabel.status, 'reading', 'Late raw idle cannot end the authoritative current reading turn.');
+managedEvent('session.error', { sessionID: 'managed-root', error: { name: 'ProviderError' } });
+managedTelemetry.updateMetadata(2, { status: 'failed' });
+managedEvent('message.updated', { info: { ...oldError, id: 'older-success', error: undefined } });
+assert.equal(managedVm().officeLabel.status, 'failed', 'A current authoritative failure is not erased by older successful message telemetry.');
+managedTelemetry.updateMetadata(2, { status: 'idle', needsInput: false });
+assert.equal(managedVm().officeLabel.status, 'idle', 'Stop/recovery to idle supersedes the last live error.');
+managedTelemetry.hydrate(managedAgent, managedSnapshot);
+assert.equal(managedVm().officeLabel.status, 'idle', 'A subsequent hydration cannot bring back the superseded historical failure.');
+managedTelemetry.updateMetadata(2, { status: 'waiting' });
+managedEvent('session.status', { sessionID: 'managed-root', status: { type: 'busy' } });
+assert.equal(managedVm().officeLabel.status, 'waiting', 'A queued worker is not reactivated by a late raw busy frame.');
+managedEvent('question.asked', { sessionID: 'old-child', id: 'current-ask' });
+assert.equal(managedVm().officeLabel.status, 'needs input', 'An actual unresolved child request still raises the managed parent hand.');
+managedTelemetry.updateMetadata(2, { status: 'idle', needsInput: false });
+assert.equal(managedVm().officeLabel.status, 'idle');
+
+const standaloneAgent = { id: 3, sessionId: 'standalone-root' };
+const standaloneTelemetry = new OfficeTelemetry(new Map([[3, standaloneAgent]]));
+standaloneTelemetry.hydrate(standaloneAgent, { ...managedSnapshot, sessionId: 'standalone-root', children: [],
+  messages: [{ info: { ...oldError, sessionID: 'standalone-root' }, parts: [] }] });
+assert.equal(standaloneTelemetry.decorate({ agentId: 3, sessionId: 'standalone-root', status: 'waiting', permissionAsked: false, tools: [], subagents: [] }).officeLabel.status, 'failed');
+const unownedStatusAgent = { id: 4, sessionId: 'no-companion-status', readOnly: true };
+const unownedStatusTelemetry = new OfficeTelemetry(new Map([[4, unownedStatusAgent]]));
+unownedStatusTelemetry.register(unownedStatusAgent);
+unownedStatusTelemetry.handleEvent({ directory: '/workspace', payload: { type: 'session.error', properties: { sessionID: 'no-companion-status', error: { name: 'ProviderError' } } } });
+assert.equal(unownedStatusTelemetry.decorate({ agentId: 4, sessionId: 'no-companion-status', status: 'waiting', permissionAsked: false, tools: [], subagents: [] }).officeLabel.status, 'failed');
+console.log('PASS: authoritative managed statuses supersede old root/child failures across restore and Stop, preserve real current work/failure and pending asks, and retain standalone fallback/usage.');

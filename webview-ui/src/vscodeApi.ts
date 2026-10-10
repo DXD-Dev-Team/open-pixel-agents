@@ -2,7 +2,7 @@ declare function acquireVsCodeApi(): { postMessage(msg: unknown): void }
 
 export const isBrowserOffice = typeof acquireVsCodeApi !== 'function'
 export interface OfficeConnection { connected: boolean; state: 'connecting' | 'connected' | 'disconnected' | 'expired'; message: string }
-export interface BrowserActionState { requestId: string; action: string; state: 'pending' | 'completed' | 'cancelled' | 'failed'; error?: string }
+export interface BrowserActionState { requestId: string; action: string; source?: 'agent' | 'desk' | 'create'; state: 'pending' | 'completed' | 'cancelled' | 'failed'; error?: string }
 let connection: OfficeConnection = { connected: !isBrowserOffice, state: isBrowserOffice ? 'connecting' : 'connected', message: isBrowserOffice ? 'Connecting to VS Code…' : '' }
 const listeners = new Set<() => void>()
 export const officeConnection = { subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }, getSnapshot: () => connection }
@@ -24,11 +24,10 @@ function browserApi(): { postMessage(msg: unknown): void } {
   let epoch = 0
   let requestIndex = 0
   const actions = new Map<string, { message: Record<string, unknown>; requestId: string; action: string }>()
-  const actionState = (requestId: string, action: string, state: BrowserActionState['state'], error?: string) => emit({ type: 'officeBrowserActionState', requestId, action, state, ...(error ? { error } : {}) })
+  const actionState = (message: Record<string, unknown>, requestId: string, action: string, state: BrowserActionState['state'], error?: string) => emit({ type: 'officeBrowserActionState', requestId, action, source: message.type === 'officeAgentAction' ? 'agent' : message.type === 'officeDeskAction' ? 'desk' : 'create', state, ...(error ? { error } : {}) })
   const actionError = (message: Record<string, unknown>, requestId: string, action: string, error: string) => {
-    actionState(requestId, action, 'failed', error)
-    emit({ type: 'officeAgentActionError', agentId: message.agentId, error })
-    emit({ type: 'officeBrowserActionError', error })
+    actionState(message, requestId, action, 'failed', error)
+    if (message.type === 'officeAgentAction') emit({ type: 'officeAgentActionError', requestId, agentId: message.agentId, error })
   }
   const failActions = () => {
     for (const operation of actions.values()) actionError(operation.message, operation.requestId, operation.action, 'The connection changed before VS Code confirmed this action. Check VS Code before retrying.')
@@ -117,7 +116,7 @@ function browserApi(): { postMessage(msg: unknown): void } {
     const key = JSON.stringify([message.type, action, message.id ?? message.agentId ?? '', message.kind ?? ''])
     if (actions.has(key)) { actionError(message, requestId, action, 'This action is already waiting for VS Code. Complete or cancel its existing dialog first.'); return }
     if (actions.size >= 32) { actionError(message, requestId, action, 'Too many actions are waiting for VS Code. Complete or cancel a pending action first.'); return }
-    const operation = { message, requestId, action }; actions.set(key, operation); actionState(requestId, action, 'pending')
+    const operation = { message, requestId, action }; actions.set(key, operation); actionState(message, requestId, action, 'pending')
     const current = epoch
     void fetch('/api/message', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Office-CSRF': csrf }, body, signal: controller?.signal }).then(async response => {
       if (current !== epoch || ended || actions.get(key) !== operation) return
@@ -129,7 +128,7 @@ function browserApi(): { postMessage(msg: unknown): void } {
         if (expired) { failActions(); csrf = undefined; epoch++; controller?.abort(); status('expired', 'Reopen Browser Office from VS Code to reconnect.') }
         const error = typeof body.error === 'string' ? body.error.slice(0, 1000) : 'The office action could not be completed.'
         actionError(message, requestId, action, error)
-      } else if (body.status === 'completed' || body.status === 'cancelled') actionState(requestId, action, body.status)
+      } else if (body.status === 'completed' || body.status === 'cancelled') actionState(message, requestId, action, body.status)
       else actionError(message, requestId, action, 'VS Code did not confirm the action outcome. Update Office Desk and reopen Browser Office before retrying.')
     }).catch(() => {
       if (current === epoch && !ended && actions.get(key) === operation) {

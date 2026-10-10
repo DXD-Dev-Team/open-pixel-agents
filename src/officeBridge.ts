@@ -41,7 +41,7 @@ export interface OfficeAgentPanelState {
 	accounts?: OfficePanelAccount[];
 	repositories?: OfficeRepository[];
 	attention?: Array<{ id: string; kind: 'permission' | 'question'; ask: string }>;
-	manager?: { mode: OfficeManagerMode; scopeRole?: OfficeManagerScope; repoIds?: string[]; teamIds: string[]; team: Array<{ id: string; name: string; role: OfficeRole }>; paused?: boolean; triaging?: boolean; coordinating?: boolean; executing?: boolean; error?: string;
+	manager?: { mode: OfficeManagerMode; scopeRole?: OfficeManagerScope; repoIds?: string[]; teamIds: string[]; team: Array<{ id: string; name: string; role: OfficeRole; repoId?: string; repoName?: string }>; paused?: boolean; triaging?: boolean; coordinating?: boolean; executing?: boolean; error?: string;
 		proposals: Array<{ id: string; text: string; workerId?: string; workerName?: string; status: 'pending' | 'approved' | 'rejected' | 'running' | 'done' | 'failed'; error?: string }> };
 }
 

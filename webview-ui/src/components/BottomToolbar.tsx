@@ -61,6 +61,10 @@ export function BottomToolbar({
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false)
 
   const handleOpenClick = () => {
+    if (isBrowserOffice) {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'officeBrowserCreateForm' } }))
+      return
+    }
     if (workspaceFolders.length > 1) {
       setIsFolderPickerOpen((prev) => !prev)
       return
@@ -78,7 +82,7 @@ export function BottomToolbar({
       <div style={{ position: 'relative' }}>
         <button
         disabled={isBrowserOffice && !connected}
-        title={isBrowserOffice ? 'Complete agent setup in VS Code' : undefined}
+        title={isBrowserOffice ? 'Create an agent in this browser' : undefined}
         onClick={handleOpenClick}
         onMouseEnter={() => setHovered('agent')}
         onMouseLeave={() => setHovered(null)}
