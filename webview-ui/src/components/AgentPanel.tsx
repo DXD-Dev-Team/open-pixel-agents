@@ -131,7 +131,7 @@ export function AgentPanel({ agentId, name, state, error, childName, actionState
   const configBusy = !!state && (state.busy || state.pending || !!coordinating || actionState?.state === 'pending' && ['assign-team', 'manager-repos', 'role', 'manager-scope', 'manager-mode', 'change-account', 'worker-model', 'worker-mode'].includes(actionState.action))
   const idle = !!state && !configBusy
   const actionLabel = actionState?.action === 'sign-in' ? 'Sign-in' : actionState?.action === 'add-account' ? 'Account setup' : actionState?.action === 'send' ? 'Message' : 'Agent action'
-  const actionFeedback = actionState?.state === 'pending' ? ['sign-in', 'add-account', 'attention'].includes(actionState.action) ? `${actionLabel}: continue in VS Code. Complete or cancel the dialog there; this browser is waiting for its result.` : `${actionLabel}: waiting for ${ownerName}…` : actionState?.state === 'cancelled' ? `${actionLabel} cancelled. You can retry.` : actionState?.state === 'completed' ? `${actionLabel} completed.` : actionState?.error
+  const actionFeedback = actionState?.state === 'pending' ? host.hostKind !== 'standalone' && ['sign-in', 'add-account', 'attention'].includes(actionState.action) ? `${actionLabel}: continue in VS Code. Complete or cancel the dialog there; this browser is waiting for its result.` : `${actionLabel}: waiting for ${ownerName}…` : actionState?.state === 'cancelled' ? `${actionLabel} cancelled. You can retry.` : actionState?.state === 'completed' ? `${actionLabel} completed.` : actionState?.error
   const lastUser = state?.chat.filter(item => item.role === 'user').at(-1)
   const copyReply = async (id: string, text: string) => {
     try { await navigator.clipboard.writeText(text); setCopied(id) } catch { setCopied(null) }

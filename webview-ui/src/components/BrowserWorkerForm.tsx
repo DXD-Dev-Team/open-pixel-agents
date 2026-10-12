@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { OFFICE_ROLE_LABELS } from '../constants.js'
+import { officeHost } from '../vscodeApi.js'
 import type { OfficeRole } from '../office/types.js'
 
 export interface BrowserModelOption { repoId: string; accountId: string; modelId: string; name: string }
@@ -11,11 +12,12 @@ export interface BrowserWorkerDraft {
   manager?: { mode: 'auto' | 'human-approval'; scopeRole: 'all' | 'builder' | 'security-reviewer' | 'verifier'; repoIds: string[]; teamIds: string[] }
 }
 
-/** Public configuration only. Credentials and repository paths stay in VS Code. */
+/** Public configuration only. Secret credentials stay with the Office host. */
 export function BrowserWorkerForm({ manager, accounts, repositories, workers, models, pending, onSave, onCancel, onAddAccount }: {
   manager: boolean; accounts: Account[]; repositories: Repository[]; workers: Worker[]; models: BrowserModelOption[]; pending: boolean
   onSave: (draft: BrowserWorkerDraft) => void; onCancel: () => void; onAddAccount: () => void
 }) {
+  const host = useSyncExternalStore(officeHost.subscribe, officeHost.getSnapshot)
   const [accountId, setAccountId] = useState(accounts.find(account => account.connected)?.id ?? accounts[0]?.id ?? '')
   const [repoId, setRepoId] = useState(repositories[0]?.id ?? '')
   const [modelId, setModelId] = useState('')
@@ -45,7 +47,7 @@ export function BrowserWorkerForm({ manager, accounts, repositories, workers, mo
     <label>Repository<select aria-label="New agent repository" value={repoId} disabled={pending} onChange={event => { setRepoId(event.target.value); setModelId('') }}><option value="" disabled>Choose a repository</option>{repositories.map(repo => <option key={repo.id} value={repo.id}>{repo.name}{repo.readOnly ? ' · read only' : ''}</option>)}</select></label>
     <label>Model<select aria-label="New agent model" value={selected?.modelId ?? ''} disabled={pending || !options.length} onChange={event => setModelId(event.target.value)}>{!options.length && <option value="">No models available for this profile</option>}{options.map(model => <option key={model.modelId} value={model.modelId}>{model.name}</option>)}</select></label>
     {selectedAccount && !selectedAccount.connected && <p className="office-browser-help">This profile needs sign-in. You can create its agent now and connect the profile before sending a prompt.</p>}
-    {!options.length && <p className="office-browser-help">If models are missing, run The Office: Refresh Desk in VS Code.</p>}
+    {!options.length && <p className="office-browser-help">{host.hostKind === 'standalone' ? 'No eligible models are available for this profile and repository. Choose another profile or repository.' : 'If models are missing, run The Office: Refresh Desk in VS Code.'}</p>}
     {!manager && <label>Role<select aria-label="New agent role" value={role} disabled={pending} onChange={event => setRole(event.target.value as OfficeRole)}>{Object.entries(OFFICE_ROLE_LABELS).filter(([value]) => value !== 'manager').map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
     <label>Thinking<select aria-label="New agent thinking" value={mode} disabled={pending} onChange={event => setMode(event.target.value as 'fast' | 'reasoning')}><option value="fast">Fast</option><option value="reasoning">Reasoning</option></select></label>
     <label>Name (optional)<input aria-label="New agent name" value={name} maxLength={100} disabled={pending} onChange={event => setName(event.target.value)} placeholder="Use the signed-in identity or model name" /></label>
