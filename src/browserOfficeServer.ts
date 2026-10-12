@@ -6,7 +6,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import * as path from 'node:path';
 
-const BODY_LIMIT = 64 * 1024;
+const BODY_LIMIT = 512 * 1024;
 const STATIC_LIMIT = 32 * 1024 * 1024;
 const EVENT_LIMIT = 32 * 1024 * 1024;
 const BUFFER_LIMIT = 64 * 1024 * 1024;

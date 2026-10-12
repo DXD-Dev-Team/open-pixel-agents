@@ -104,13 +104,14 @@ assert.equal(vm().subagents[0].officeLabel.speech.text, 'Real child reply.');
 assert.equal(label().speech.text, 'Real root reply.');
 event('message.part.updated', { part: { id: 'delegation', sessionID: 'root', type: 'tool', tool: 'task', state: { status: 'running', input: { prompt: 'Inspect the repository. Bearer fabricated-secret' } } } });
 assert.equal(label().speech.source, 'task');
-assert.equal(label().speech.text, 'Inspect the repository. Bearer [redacted]');
+assert.equal(label().speech.text, 'Delegating a task to a teammate.');
+assert(!label().speech.text.includes('fabricated-secret'), 'Task arguments must not appear in the public activity bubble.');
 telemetry.expireSpeech(Date.now() + 10_000);
 assert.equal(label().speech, undefined);
 assert.equal(vm().subagents[0].officeLabel.speech, undefined);
 assert.equal(label().name, 'Reviewer', 'Speech expiry must preserve the permanent worker label.');
 assert.equal(label().managed, true);
-console.log('PASS: late idle preserves managed completion; real root/child text and task prompts speak only over their own session, redact credentials, and expire.');
+console.log('PASS: late idle preserves managed completion; real root/child text and public task delegation summaries speak only over their own session, redact credentials, and expire.');
 
 event('message.part.updated', { part: { id: 'delegation', sessionID: 'root', type: 'tool', tool: 'task', state: { status: 'completed' } } });
 event('session.error', { sessionID: 'child', error: { name: 'ProviderError' } });
@@ -138,6 +139,10 @@ const managedEvent = (type, properties) => managedTelemetry.handleEvent({ direct
 managedTelemetry.hydrate(managedAgent, managedSnapshot);
 assert.equal(managedVm().officeLabel.status, 'idle', 'A restored invalid-model failure must not override the current managed idle snapshot.');
 assert.equal(managedVm().officeLabel.usageTokens, 5, 'Historical usage is retained while historical failure status is superseded.');
+managedAgent.officeMetadata.usageTokens = 0; managedAgent.officeMetadata.estimatedCost = 0;
+assert.equal(managedVm().officeLabel.usageTokens, 0, 'An explicit managed counter reset must supersede old history totals.');
+assert.equal(managedVm().officeLabel.estimatedCost, 0);
+managedAgent.officeMetadata.usageTokens = 9; assert.equal(managedVm().officeLabel.usageTokens, 9);
 assert.equal(managedVm().subagents[0].officeLabel.status, 'failed', 'Child session detail is retained without pinning its authoritative parent as failed.');
 managedTelemetry.updateMetadata(2, { status: 'working' });
 assert.equal(managedVm().officeLabel.status, 'working', 'A current active turn remains working even when history contains an error and unfinished reading tool.');

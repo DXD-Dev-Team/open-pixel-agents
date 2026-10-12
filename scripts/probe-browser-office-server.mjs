@@ -252,7 +252,7 @@ test('aborted clients cannot accumulate unbounded pending provider bootstraps', 
 
 test('oversized content-length and chunked JSON fail before dispatch while normal-sized requests remain usable', async t => {
   const value = await fixture(t); const session = await value.connect();
-  const body = JSON.stringify({ type: 'fixtureAllowed', text: 'x'.repeat(70 * 1024) });
+  const body = JSON.stringify({ type: 'fixtureAllowed', text: 'x'.repeat(520 * 1024) });
   assert.equal((await value.post('/api/message', body, session)).status, 413);
   const streamed = await raw(value.origin, '/api/message', { method: 'POST',
     headers: { Origin: value.origin, Cookie: session.cookie, 'X-Office-CSRF': session.csrf, 'Content-Type': 'application/json' },

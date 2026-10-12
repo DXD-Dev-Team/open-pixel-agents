@@ -72,6 +72,8 @@ async function main() {
 		await ctx.dispose();
 		// Copy assets after build
 		copyAssets();
+		fs.mkdirSync(path.join(__dirname, 'dist/runtime'), { recursive: true });
+		fs.copyFileSync(path.join(__dirname, '../runtime/host-client.mjs'), path.join(__dirname, 'dist/runtime/host-client.mjs'));
 	}
 }
 

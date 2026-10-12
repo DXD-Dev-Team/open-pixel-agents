@@ -114,7 +114,12 @@ try {
   assert.equal(new URL(page.url()).hash, '');
   await page.evaluate(() => { window.officeFixtureActions = []; window.addEventListener('message', event => { if (event.data?.type === 'officeBrowserActionState') window.officeFixtureActions.push(event.data); }); });
   assert.equal(await page.getByRole('button', { name: 'Layout', exact: true }).count(), 0);
-  assert.equal(await page.getByRole('button', { name: 'Settings', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Office settings', exact: true });
+  assert.equal(await settings.getByRole('button', { name: 'Import Layout', exact: true }).count(), 0);
+  assert.equal(await settings.getByRole('button', { name: 'Open Sessions Folder', exact: true }).count(), 0);
+  assert.equal(await settings.getByRole('button', { name: 'Export Layout', exact: true }).count(), 1);
+  await settings.getByRole('button', { name: 'Close Office settings', exact: true }).click();
   await page.getByRole('button', { name: /Team · 4/ }).click();
   await page.getByRole('heading', { name: /Closed fixture/ }).waitFor();
   await page.getByRole('button', { name: 'admin', exact: true }).click();
@@ -228,7 +233,7 @@ try {
   values.set('office-pixel-agents.agentSeats', { ...seatMeta, 99: { seatId: 'chair-2-2', palette: 3, hueShift: 0 } });
   provider.webview.postMessage({ type: 'agentCreated', id: 99, managed: true, role: 'manager', repoId: 'repo-a', repoName: rows[0].name });
   provider.webview.postMessage({ type: 'officeAgentSeats', seats: values.get('office-pixel-agents.agentSeats') }); provider.runtimeController.postSnapshot();
-  await page.getByRole('dialog').waitFor(); await page.getByRole('heading', { name: 'Closed fixture', exact: true }).last().waitFor();
+  await page.getByRole('dialog').waitFor(); await page.getByRole('heading', { name: 'Closed fixture', exact: true }).last().waitFor(); await page.getByRole('dialog').getByRole('button', { name: 'Controls', exact: true }).click();
   assert.equal(await page.getByRole('checkbox', { name: /Shared Login.*Engineer.*Fixture Repository A/ }).count(), 1); assert.equal(await page.getByRole('checkbox', { name: /Shared Login.*Verifier.*Fixture Repository B/ }).count(), 1);
   await page.getByRole('checkbox', { name: /Fixture 2/ }).check(); await page.getByRole('button', { name: 'Save team', exact: true }).click();
   await new Promise(resolve => setTimeout(resolve, 100)); assert.equal(await page.getByRole('combobox', { name: 'Manager mode', exact: true }).isDisabled(), true);
@@ -268,6 +273,7 @@ try {
   await second.getByRole('button', { name: 'Chat & controls', exact: true }).first().click(); await second.getByRole('dialog').waitFor();
   await page.evaluate(() => { window.officeFixtureActions = []; });
   await page.getByRole('textbox', { name: 'Message this worker' }).fill('Preserved while adding a separate profile');
+  await page.getByRole('dialog').getByRole('button', { name: 'Profile', exact: true }).click();
   await page.getByText('Add a separate account profile', { exact: true }).click();
   const accountCommandCount = commands.filter(([, message]) => ['addAccount', 'add-account'].includes(message?.action)).length;
   await page.getByRole('dialog').getByRole('button', { name: '+ Separate account profile', exact: true }).click();
@@ -278,6 +284,7 @@ try {
   await page.locator('.office-browser-account-form').getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('button', { name: 'agents', exact: true }).click(); await page.getByRole('button', { name: 'Chat & controls', exact: true }).first().click(); await page.getByRole('dialog').waitFor();
   assert.equal(await page.getByRole('textbox', { name: 'Message this worker' }).inputValue(), 'Preserved while adding a separate profile');
+  if (await page.getByRole('button', { name: 'Reconnect', exact: true }).count() === 0) await page.getByRole('dialog').getByRole('button', { name: 'Profile', exact: true }).click();
   await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
   await page.locator('.office-dialog-action-feedback').getByText(/Sign-in: continue in VS Code/).waitFor();
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -292,6 +299,7 @@ try {
   assert.equal(await page.locator('.office-dialog-error').getByText(/already waiting for VS Code/).count(), 0);
   await page.getByRole('button', { name: 'Reconnect', exact: true }).click(); await new Promise(resolve => setTimeout(resolve, 100));
   adminPending.get('agent-sign-in').reject(new Error('DO-NOT-EXPORT fixture agent sign-in failure')); await page.locator('.office-dialog-action-failed').waitFor();
+  await page.getByRole('dialog').getByRole('button', { name: 'Chat', exact: true }).click();
   await page.getByRole('textbox', { name: 'Message this worker' }).fill('Headless browser chat fixture'); await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('.office-dialog-chat').getByText('Headless browser chat fixture', { exact: true }).waitFor();
   await second.locator('.office-dialog-chat').getByText('Headless browser chat fixture', { exact: true }).waitFor();

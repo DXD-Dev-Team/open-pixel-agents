@@ -9,7 +9,7 @@ import { OFFICE_CANVAS_FLUSH_EVENT, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS } from '..
 import { setFloorSprites } from '../office/floorTiles.js'
 import { setWallSprites } from '../office/wallTiles.js'
 import { setCharacterTemplates } from '../office/sprites/spriteData.js'
-import { isBrowserOffice, vscode } from '../vscodeApi.js'
+import { isBrowserOffice, hostOwnsSeats, officeHost, vscode } from '../vscodeApi.js'
 import { playDoneSound, setSoundEnabled } from '../notificationSound.js'
 
 export interface SubagentCharacter {
@@ -176,7 +176,7 @@ function syncRuntimeAgent(
 }
 
 function saveAgentSeats(os: OfficeState): void {
-  if (isBrowserOffice) return
+  if (hostOwnsSeats()) return
   const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {}
   for (const ch of os.characters.values()) {
     if (ch.isSubagent) continue
@@ -221,7 +221,7 @@ export function useExtensionMessages(
         setAgents([]); setAgentTools({}); setAgentStatuses({}); setSubagentTools({}); setSubagentCharacters([])
         return
       }
-      if (msg.type === 'officeAgentSeats' && isBrowserOffice) {
+      if (msg.type === 'officeAgentSeats' && hostOwnsSeats()) {
         const seats = msg.seats as Record<string, { palette?: number; hueShift?: number; seatId?: string | null }>
         for (const ch of os.characters.values()) {
           if (ch.isSubagent) continue
@@ -237,16 +237,18 @@ export function useExtensionMessages(
       }
 
       if (msg.type === 'officeRepositories') {
-        os.configureRepositories(msg.repositories)
-        if (!isBrowserOffice) vscode.postMessage({ type: 'officeRepositoriesApplied', requestId: msg.requestId })
+        os.configureRepositories(msg.repositories, officeHost.getSnapshot().hostKind !== 'standalone')
+        if (!hostOwnsSeats()) vscode.postMessage({ type: 'officeRepositoriesApplied', requestId: msg.requestId })
         saveAgentSeats(os)
         return
       }
       if (msg.type === 'officeSeatCapacityRequest') {
+        if (hostOwnsSeats()) return
         vscode.postMessage({ type: 'officeSeatCapacity', requestId: msg.requestId, seatId: os.reserveComputerDesk(msg.requestId, msg.role, msg.agentId, msg.repoId) })
         return
       }
       if (msg.type === 'officeRoleSeatApply') {
+        if (hostOwnsSeats()) return
         const applied = os.applyRoleSeat(msg.agentId, msg.requestId, msg.role, msg.managerForRole, msg.repoId, msg.repoName)
         vscode.postMessage({ type: 'officeRoleSeatApplied', requestId: msg.requestId, applied })
         return
@@ -262,6 +264,7 @@ export function useExtensionMessages(
       }
 
       if (msg.type === 'officeSnapshotRequest') {
+        if (hostOwnsSeats()) return
         const currentCanvas = document.querySelector<HTMLCanvasElement>('canvas[data-office-canvas]')
         vscode.postMessage({ type: 'officeSnapshotReady', requestId: msg.requestId,
           diagnostic: { canvasPresent: !!currentCanvas, width: currentCanvas?.width,
@@ -269,7 +272,6 @@ export function useExtensionMessages(
         // Read pixels only after the actual office game loop has rendered the
         // current character state. This is an acknowledgment, not a mock scene.
         let captured = false
-        let fallback: ReturnType<typeof setTimeout>
         const capture = () => {
           if (captured) return
           const canvas = document.querySelector<HTMLCanvasElement>('canvas[data-office-canvas]')
@@ -286,7 +288,7 @@ export function useExtensionMessages(
             }),
             png: canvas.toDataURL('image/png') })
         }
-        fallback = setTimeout(capture, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS)
+        const fallback = setTimeout(capture, OFFICE_SNAPSHOT_FRAME_FALLBACK_MS)
         requestAnimationFrame(() => requestAnimationFrame(capture))
         return
       }
@@ -306,7 +308,7 @@ export function useExtensionMessages(
         }
         if (layout) {
           os.rebuildFromLayout(layout)
-          if (layout.officeDefault && os.repositories.length) os.configureRepositories(os.repositories)
+          if (layout.officeDefault && os.repositories.length && officeHost.getSnapshot().hostKind !== 'standalone') os.configureRepositories(os.repositories)
           onLayoutLoaded?.(layout)
         } else {
           // Default layout — snapshot whatever OfficeState built

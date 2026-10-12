@@ -29,10 +29,14 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 	return {
 		version: 1,
 		runtimeOwnershipVersion: 1,
-		configureRuntime: configureOpenCodeRuntime,
-		shutdownRuntime: shutdownOpenCodeRuntime,
+		threadHistoryVersion: 1,
+		exportOfficeLayout: async () => provider.exportOfficeLayout(),
+		configureRuntime: options => { if (provider.isStandaloneMirror) { throw new Error('The standalone Office owns its runtime.'); } configureOpenCodeRuntime(options); },
+		shutdownRuntime: async () => { if (!provider.isStandaloneMirror) { await shutdownOpenCodeRuntime(); } },
 		getServer: () => provider.getServerConnection(),
 		createAgent: (input) => provider.createManagedAgent(input),
+		attachAgent: (input) => provider.attachManagedAgent(input),
+		detachAgent: (agentId: number, expectedSessionId?: string) => provider.detachManagedAgent(agentId, expectedSessionId),
 		listAgents: () => provider.listManagedAgents(),
 		focusAgent: (agentId) => provider.focusManagedAgent(agentId),
 		closeAgent: (agentId) => provider.closeManagedAgent(agentId),
@@ -51,5 +55,5 @@ export function activate(context: vscode.ExtensionContext): OfficeBridgeApi {
 export async function deactivate(): Promise<void> {
 	providerInstance?.dispose();
 	await providerInstance?.disposeBrowserOffice();
-	await shutdownOpenCodeRuntime();
+	if (!providerInstance?.isStandaloneMirror) { await shutdownOpenCodeRuntime(); }
 }

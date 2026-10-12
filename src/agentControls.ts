@@ -1,5 +1,5 @@
 import type { OfficeAgentAction, OfficeAgentPanelState, OfficeRole, OfficePanelAccount, OfficeManagerScope, OfficeRepository } from './officeBridge.js';
-import { OFFICE_AGENT_ACTIONS, OFFICE_MANAGER_MODES, OFFICE_ROLES, OFFICE_STATUS_PRECEDENCE, OFFICE_PANEL_CHAT_LIMIT, OFFICE_PANEL_TEAM_LIMIT, OFFICE_PANEL_TEXT_LIMIT } from './constants.js';
+import { OFFICE_AGENT_ACTIONS, OFFICE_MANAGER_MODES, OFFICE_ROLES, OFFICE_STATUS_PRECEDENCE, OFFICE_PANEL_CHAT_LIMIT, OFFICE_PANEL_HISTORY_LIMIT, OFFICE_PANEL_TEAM_LIMIT, OFFICE_PANEL_TEXT_LIMIT } from './constants.js';
 
 function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -48,20 +48,50 @@ export function normalizeAgentPanel(input: unknown): OfficeAgentPanelState {
 		? worker.status as OfficeAgentPanelState['worker']['status'] : 'idle';
 	const result: OfficeAgentPanelState = {
 		worker: { id: label(worker.id), name: label(worker.name, 100), role: officeRole(worker.role), status, started: worker.started === true },
-		chat: Array.isArray(state.chat) ? state.chat.slice(-OFFICE_PANEL_CHAT_LIMIT).flatMap(value => {
+		chat: Array.isArray(state.chat) ? state.chat.slice(-OFFICE_PANEL_HISTORY_LIMIT).flatMap(value => {
 			const message = record(value);
 			if (message.role !== 'user' && message.role !== 'assistant') { return []; }
 			return [{ id: label(message.id), role: message.role, text: body(message.text), createdAt: typeof message.createdAt === 'number' && Number.isFinite(message.createdAt) ? message.createdAt : 0 }];
 		}) : [], pending: state.pending === true, busy: state.busy === true,
 	};
+	if (state.viewId !== undefined) { const viewId = label(state.viewId, 36); if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(viewId)) { throw new Error('The conversation view identifier is invalid.'); } result.viewId = viewId; }
 	for (const key of ['modelId', 'accountId', 'repoId', 'repoName'] as const) {
 		if (worker[key] !== undefined) { result.worker[key] = label(worker[key]); }
 	}
 	if (['claude', 'codex', 'grok'].includes(String(worker.providerKind))) { result.worker.providerKind = worker.providerKind as 'claude' | 'codex' | 'grok'; }
+	if (worker.mode === 'fast' || worker.mode === 'reasoning') { result.worker.mode = worker.mode; }
+	if (Array.isArray(state.modelOptions)) { result.modelOptions = state.modelOptions.slice(0, 500).map(value => { const item = record(value); return { id: label(item.id), name: label(item.name, 100) }; }); }
 	if (state.repositories) { result.repositories = officeRepositories(state.repositories); }
 	if (state.account) { result.account = panelAccount(state.account); }
 	if (Array.isArray(state.accounts)) { result.accounts = state.accounts.slice(0, OFFICE_PANEL_CHAT_LIMIT).map(panelAccount); }
 	if (state.error) { result.error = body(state.error, 2_000); }
+	if (state.capabilities) {
+		const capabilities = record(state.capabilities);
+		result.capabilities = { threads: capabilities.threads === true, usageReset: capabilities.usageReset === true, threadFork: capabilities.threadFork === true, threadCompact: capabilities.threadCompact === true, creditReset: capabilities.creditReset === true };
+	}
+	if (state.threads) {
+		const threads = record(state.threads);
+		result.threads = { items: Array.isArray(threads.items) ? threads.items.slice(0, 500).map(value => {
+			const item = record(value);
+			if (!['root', 'child'].includes(String(item.kind)) || !['fast', 'reasoning'].includes(String(item.mode))) { throw new Error('This conversation has invalid thread metadata.'); }
+			return { id: label(item.id), workerId: label(item.workerId), repoId: label(item.repoId), title: label(item.title, 100), kind: item.kind as 'root' | 'child', accountId: label(item.accountId), providerId: label(item.providerId), modelId: label(item.modelId), mode: item.mode as 'fast' | 'reasoning', createdAt: typeof item.createdAt === 'number' && Number.isFinite(item.createdAt) ? item.createdAt : 0, updatedAt: typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt) ? item.updatedAt : 0, archived: item.archived === true, unavailable: item.unavailable === true, ...(item.recoveredUnknown === true ? { recoveredUnknown: true } : {}), ...(item.parentThreadId ? { parentThreadId: label(item.parentThreadId) } : {}) };
+		}) : [], ...(threads.selectedId ? { selectedId: label(threads.selectedId) } : {}) };
+	}
+	if (state.chatThreadId) { result.chatThreadId = label(state.chatThreadId); }
+	if (state.chatPage) { const page = record(state.chatPage); result.chatPage = { hasMore: page.hasMore === true, older: page.older === true, ...(page.before ? { before: label(page.before) } : {}) }; }
+	if (state.usage) {
+		const usage = record(state.usage);
+		if (typeof usage.tokens !== 'number' || !Number.isFinite(usage.tokens) || usage.tokens < 0) { throw new Error('The usage total is invalid.'); }
+		result.usage = { tokens: usage.tokens, ...(typeof usage.totalTokens === 'number' && Number.isFinite(usage.totalTokens) && usage.totalTokens >= 0 ? { totalTokens: usage.totalTokens } : {}), ...(typeof usage.threadTokens === 'number' && Number.isFinite(usage.threadTokens) && usage.threadTokens >= 0 ? { threadTokens: usage.threadTokens } : {}), byRepository: Array.isArray(usage.byRepository) ? usage.byRepository.slice(0, 8).flatMap(value => { const repo = record(value); return typeof repo.tokens === 'number' && Number.isFinite(repo.tokens) && repo.tokens >= 0 ? [{ id: label(repo.id), tokens: repo.tokens, ...(typeof repo.estimatedCost === 'number' && Number.isFinite(repo.estimatedCost) && repo.estimatedCost >= 0 ? { estimatedCost: repo.estimatedCost } : {}) }] : []; }) : [], resettable: usage.resettable === true, ...(typeof usage.estimatedCost === 'number' && Number.isFinite(usage.estimatedCost) && usage.estimatedCost >= 0 ? { estimatedCost: usage.estimatedCost } : {}) };
+	}
+	if (state.accountQuota) {
+		const quota = record(state.accountQuota), reset = record(quota.reset);
+		result.accountQuota = { available: quota.available === true, ...(quota.reason ? { reason: body(quota.reason, 1000) } : {}), ...(quota.accountName ? { accountName: label(quota.accountName, 100) } : {}),
+			limits: Array.isArray(quota.limits) ? quota.limits.slice(0, 20).flatMap(value => { const item = record(value);
+				if (typeof item.usedPercent !== 'number' || !Number.isFinite(item.usedPercent) || item.usedPercent < 0 || item.usedPercent > 100 || typeof item.windowDurationMins !== 'number' || !Number.isFinite(item.windowDurationMins) || item.windowDurationMins < 0 || typeof item.resetsAt !== 'number' || !Number.isFinite(item.resetsAt) || item.resetsAt < 0) { return []; }
+				return [{ id: label(item.id), ...(item.name ? { name: label(item.name, 100) } : {}), usedPercent: item.usedPercent, windowDurationMins: item.windowDurationMins, resetsAt: item.resetsAt }];
+			}) : [], ...(quota.reset ? { reset: { ...(typeof reset.availableCount === 'number' && Number.isInteger(reset.availableCount) && reset.availableCount >= 0 ? { availableCount: reset.availableCount } : {}), ...(reset.ticket ? { ticket: label(reset.ticket, 4096) } : {}) } } : {}) };
+	}
 	if (Array.isArray(state.attention)) {
 		result.attention = state.attention.slice(0, OFFICE_PANEL_CHAT_LIMIT).flatMap(value => {
 			const item = record(value);
@@ -94,11 +124,30 @@ export function normalizeAgentAction(input: unknown): OfficeAgentAction {
 	const requestId = label(message.requestId, 128);
 	if (!/^[a-zA-Z0-9_-]+$/.test(requestId)) { throw new Error('The agent action identifier is invalid.'); }
 	const action: OfficeAgentAction = { type: 'agent-action', agentId: message.agentId as number, requestId, action: message.action as OfficeAgentAction['action'] };
+	if (message.viewId !== undefined) {
+		const viewId = label(message.viewId, 36);
+		if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(viewId)) { throw new Error('The conversation view identifier is invalid.'); }
+		action.viewId = viewId;
+	}
+	if (action.action === 'worker-model') { action.modelId = label(message.modelId); }
+	if (action.action === 'worker-mode') {
+		if (message.workerMode !== 'fast' && message.workerMode !== 'reasoning') { throw new Error('Choose Fast or Reasoning mode.'); }
+		action.workerMode = message.workerMode;
+	}
+	if (action.action === 'credit-reset') {
+		if (message.confirmed !== true) { throw new Error('Confirm this account reset before using it.'); }
+		action.resetTicket = label(message.resetTicket, 4096); action.confirmed = true;
+	}
 	if (action.action === 'send') {
 		if (typeof message.text !== 'string' || !message.text.trim() || message.text.length > OFFICE_PANEL_TEXT_LIMIT) { throw new Error('Write a message of at most 20,000 characters.'); }
 		action.text = message.text.replace(/\0/g, '').trim();
 		if (!action.text) { throw new Error('Write a message before sending.'); }
 	}
+	if (message.threadId !== undefined && (action.action === 'send' || action.action.startsWith('thread-'))) { action.threadId = label(message.threadId); }
+	if (['thread-select', 'thread-rename', 'thread-archive', 'thread-more', 'thread-fork', 'thread-compact'].includes(action.action) && !action.threadId) { throw new Error('Choose a conversation thread.'); }
+	if (action.action === 'thread-new') { action.repoId = label(message.repoId); }
+	if (action.action === 'thread-new' || action.action === 'thread-rename') { action.title = label(message.title, 100); }
+	if (action.action === 'thread-more') { action.before = label(message.before); }
 	if (action.action === 'role') {
 		if (message.role === undefined) { throw new Error('Choose a supported office role.'); }
 		action.role = officeRole(message.role);

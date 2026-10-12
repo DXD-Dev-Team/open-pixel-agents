@@ -51,7 +51,7 @@ function object(value: unknown): Record<string, unknown> {
 /** Copy only the non-secret public metadata fields into persistence. */
 export function normalizeOfficeMetadata(input: OfficeWorkerMetadata, previous: OfficeWorkerMetadata = {}): OfficeWorkerMetadata {
 	const result: OfficeWorkerMetadata = { ...previous };
-	for (const key of ['workerId', 'name', 'providerId', 'modelId', 'accountId', 'repoId', 'repoName'] as const) {
+	for (const key of ['workerId', 'name', 'providerId', 'modelId', 'accountId', 'repoId', 'repoName', 'activeRepoId', 'activeRepoName'] as const) {
 		if (input[key] === undefined) {
 			continue;
 		}
@@ -60,6 +60,10 @@ export function normalizeOfficeMetadata(input: OfficeWorkerMetadata, previous: O
 			throw new Error(`Open Pixel Agents: Invalid ${key} metadata.`);
 		}
 		result[key] = value.trim();
+	}
+	if (input.managerPaused !== undefined) {
+		if (typeof input.managerPaused !== 'boolean') { throw new Error('The manager pause metadata is invalid.'); }
+		result.managerPaused = input.managerPaused;
 	}
 	if (input.role !== undefined) { result.role = officeRole(input.role); }
 	if (input.managerRepoIds !== undefined) {
@@ -276,7 +280,7 @@ export class OfficeTelemetry {
 			return;
 		}
 		if (live && part.tool === 'task' && typeof object(state.input).prompt === 'string') {
-			this.speak(record, `task:${id}`, object(state.input).prompt as string, 'task');
+			this.speak(record, `task:${id}`, 'Delegating a task to a teammate.', 'task');
 		}
 		if (state.status === 'pending' || state.status === 'running') {
 			record.tools.set(id, text(part.tool) ?? 'tool');
@@ -407,14 +411,17 @@ export class OfficeTelemetry {
 		}
 		const status = statuses.sort((a, b) => statusOrder.indexOf(a) - statusOrder.indexOf(b))[0];
 		const label: OfficeLabel = { name: metadata.name ?? agent?.displayName ?? `Agent ${record.agentId}`,
-			status, role: metadata.role ?? 'builder', managerForRole: metadata.managerForRole, repoId: metadata.repoId, repoName: metadata.repoName, managerRepoIds: metadata.managerRepoIds, providerKind: metadata.providerKind, needsInput: status === 'needs input', managed: agent?.readOnly === true };
+			status, role: metadata.role ?? 'builder', managerForRole: metadata.managerForRole, repoId: metadata.repoId, repoName: metadata.repoName, managerRepoIds: metadata.managerRepoIds, managerPaused: metadata.managerPaused, activeRepoId: metadata.activeRepoId, activeRepoName: metadata.activeRepoName, providerKind: metadata.providerKind, needsInput: status === 'needs input', managed: agent?.readOnly === true };
 		if (record.speech && record.speech.expiresAt > Date.now()) { label.speech = { ...record.speech }; }
 		if (metadata.providerKind === 'codex') {
 			const items = [...record.completed.values()];
-			label.usageTokens = Math.max(items.reduce((total, item) => total + item.tokens, 0), record.parentId ? 0 : metadata.usageTokens ?? 0);
+			const managedRoot = agent?.readOnly === true && !record.parentId;
+			label.usageTokens = managedRoot && metadata.usageTokens !== undefined ? metadata.usageTokens
+				: Math.max(items.reduce((total, item) => total + item.tokens, 0), record.parentId ? 0 : metadata.usageTokens ?? 0);
+			if (managedRoot && metadata.estimatedCost !== undefined) { label.estimatedCost = metadata.estimatedCost; }
 			if (metadata.pricing && metadata.pricing.providerId === metadata.providerId && metadata.pricing.modelId === metadata.modelId) {
 				const calculated = cost(items, metadata.pricing);
-				if (calculated !== undefined) {
+				if (calculated !== undefined && label.estimatedCost === undefined) {
 					label.estimatedCost = Math.max(calculated, record.parentId ? 0 : metadata.estimatedCost ?? 0);
 				}
 			}

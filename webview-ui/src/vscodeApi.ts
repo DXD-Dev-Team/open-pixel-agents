@@ -1,8 +1,14 @@
 declare function acquireVsCodeApi(): { postMessage(msg: unknown): void }
 
 export const isBrowserOffice = typeof acquireVsCodeApi !== 'function'
+export const officeViewId = crypto.randomUUID()
+export interface OfficeHostCapabilities { seatAuthority: 'host' | 'webview'; hostKind: 'standalone' | 'vscode'; features: Record<string, boolean> }
+let host: OfficeHostCapabilities = { seatAuthority: isBrowserOffice ? 'host' : 'webview', hostKind: 'vscode', features: {} }
+const hostListeners = new Set<() => void>()
+export const officeHost = { subscribe: (listener: () => void) => { hostListeners.add(listener); return () => { hostListeners.delete(listener) } }, getSnapshot: () => host }
+export const hostOwnsSeats = () => host.seatAuthority === 'host'
 export interface OfficeConnection { connected: boolean; state: 'connecting' | 'connected' | 'disconnected' | 'expired'; message: string }
-export interface BrowserActionState { requestId: string; action: string; source?: 'agent' | 'desk' | 'create'; state: 'pending' | 'completed' | 'cancelled' | 'failed'; error?: string }
+export interface BrowserActionState { requestId: string; action: string; source?: 'agent' | 'desk' | 'create' | 'settings'; state: 'pending' | 'completed' | 'cancelled' | 'failed'; error?: string }
 let connection: OfficeConnection = { connected: !isBrowserOffice, state: isBrowserOffice ? 'connecting' : 'connected', message: isBrowserOffice ? 'Connecting to VS Code…' : '' }
 const listeners = new Set<() => void>()
 export const officeConnection = { subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }, getSnapshot: () => connection }
@@ -11,6 +17,23 @@ function status(state: OfficeConnection['state'], message: string) {
   for (const listener of listeners) listener()
 }
 function emit(message: unknown) { window.dispatchEvent(new MessageEvent('message', { data: message })) }
+window.addEventListener('message', event => {
+  const message = event.data
+  if (!isBrowserOffice && host.hostKind === 'standalone') {
+    if (message?.type === 'officeBrowserReady') status('connected', 'Connected to Office host')
+    if (message?.type === 'officeBrowserBootstrap') status('connecting', 'Preparing the shared Office host…')
+    if (['officeBrowserClosed', 'officeBrowserSessionExpired', 'officeBrowserConnectionError'].includes(message?.type)) status('disconnected', 'Office host connection lost. Reopen the Office host to reconnect.')
+  }
+  if (message?.type !== 'officeHostCapabilities') return
+  const features: Record<string, boolean> = {}
+  for (const [name, value] of Object.entries(message.features ?? {})) if (/^[a-zA-Z][a-zA-Z0-9]{0,39}$/.test(name) && typeof value === 'boolean') features[name] = value
+  host = { seatAuthority: message.seatAuthority === 'host' ? 'host' : 'webview', hostKind: message.hostKind === 'standalone' ? 'standalone' : 'vscode', features }
+  if (!isBrowserOffice && host.hostKind === 'standalone') status('connecting', 'Preparing the shared Office host…')
+  for (const listener of hostListeners) listener()
+})
+
+const ownerName = () => host.hostKind === 'standalone' ? 'Office host' : 'VS Code'
+const reopenHint = () => host.hostKind === 'standalone' ? 'Reopen your Office host link to reconnect.' : 'Reopen Browser Office from VS Code to reconnect.'
 
 function browserApi(): { postMessage(msg: unknown): void } {
   document.documentElement.dataset.officeBrowser = 'true'
@@ -24,13 +47,13 @@ function browserApi(): { postMessage(msg: unknown): void } {
   let epoch = 0
   let requestIndex = 0
   const actions = new Map<string, { message: Record<string, unknown>; requestId: string; action: string }>()
-  const actionState = (message: Record<string, unknown>, requestId: string, action: string, state: BrowserActionState['state'], error?: string) => emit({ type: 'officeBrowserActionState', requestId, action, source: message.type === 'officeAgentAction' ? 'agent' : message.type === 'officeDeskAction' ? 'desk' : 'create', state, ...(error ? { error } : {}) })
+  const actionState = (message: Record<string, unknown>, requestId: string, action: string, state: BrowserActionState['state'], error?: string) => emit({ type: 'officeBrowserActionState', requestId, action, source: message.type === 'officeAgentAction' ? 'agent' : message.type === 'officeDeskAction' ? 'desk' : ['saveLayout', 'setSoundEnabled'].includes(String(message.type)) ? 'settings' : 'create', state, ...(error ? { error } : {}) })
   const actionError = (message: Record<string, unknown>, requestId: string, action: string, error: string) => {
     actionState(message, requestId, action, 'failed', error)
     if (message.type === 'officeAgentAction') emit({ type: 'officeAgentActionError', requestId, agentId: message.agentId, error })
   }
   const failActions = () => {
-    for (const operation of actions.values()) actionError(operation.message, operation.requestId, operation.action, 'The connection changed before VS Code confirmed this action. Check VS Code before retrying.')
+    for (const operation of actions.values()) actionError(operation.message, operation.requestId, operation.action, `The connection changed before ${ownerName()} confirmed this action. Check ${ownerName()} before retrying.`)
     actions.clear()
   }
   const connect = async () => {
@@ -43,7 +66,7 @@ function browserApi(): { postMessage(msg: unknown): void } {
       const capability = token; token = undefined
       const handshake = await fetch('/api/connect', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(capability !== undefined ? { token: capability } : {}), signal })
       if (ended || current !== epoch) return
-      if (handshake.status === 401 || handshake.status === 403) { status('expired', 'Reopen Browser Office from VS Code to reconnect.'); return }
+      if (handshake.status === 401 || handshake.status === 403) { status('expired', reopenHint()); return }
       if (!handshake.ok) throw new Error('Connection unavailable.')
       const session = await handshake.json() as { csrf?: unknown }
       if (ended || current !== epoch) return
@@ -51,7 +74,7 @@ function browserApi(): { postMessage(msg: unknown): void } {
       csrf = session.csrf
       const response = await fetch('/api/events', { credentials: 'same-origin', headers: { 'X-Office-CSRF': csrf }, signal })
       if (ended || current !== epoch) return
-      if (response.status === 401 || response.status === 403) { status('expired', 'Reopen Browser Office from VS Code to reconnect.'); return }
+      if (response.status === 401 || response.status === 403) { status('expired', reopenHint()); return }
       if (!response.ok || !response.body) throw new Error('Connection unavailable.')
       if (ended || current !== epoch) return
       status('connecting', 'Preparing the shared office in VS Code…')
@@ -72,14 +95,14 @@ function browserApi(): { postMessage(msg: unknown): void } {
             if (data) {
               const message = JSON.parse(data) as { type?: string }
               emit(message)
-              if (message.type === 'officeBrowserReady') status('connected', 'Connected to VS Code · Layout is managed in VS Code')
+              if (message.type === 'officeBrowserReady') status('connected', host.hostKind === 'standalone' ? 'Connected to Office host' : 'Connected to VS Code · Layout is managed in VS Code')
               if (message.type === 'officeBrowserConnectionError') {
                 failActions(); csrf = undefined; epoch++; controller?.abort()
                 status('disconnected', 'The VS Code office could not initialize. Open Office Desk in VS Code, then reopen Browser Office.'); return
               }
               if (message.type === 'officeBrowserSessionExpired' || message.type === 'officeBrowserClosed') {
                 failActions(); csrf = undefined; epoch++; controller?.abort()
-                status('expired', 'Reopen Browser Office from VS Code to reconnect.'); return
+                status('expired', reopenHint()); return
               }
             }
           }
@@ -94,7 +117,7 @@ function browserApi(): { postMessage(msg: unknown): void } {
       retry = setTimeout(() => { void connect() }, 1500)
     }
   }
-  window.addEventListener('pagehide', () => { ended = true; epoch++; clearTimeout(retry); controller?.abort(); csrf = undefined; failActions(); status('disconnected', 'Reconnect to VS Code before using these controls.') })
+  window.addEventListener('pagehide', () => { ended = true; epoch++; clearTimeout(retry); controller?.abort(); csrf = undefined; failActions(); status('disconnected', `Reconnect to ${ownerName()} before using these controls.`) })
   window.addEventListener('pageshow', event => { if (event.persisted && ready) { ended = false; void connect() } })
   return { postMessage(input) {
     if (!input || typeof input !== 'object') return
@@ -103,19 +126,20 @@ function browserApi(): { postMessage(msg: unknown): void } {
     // StrictMode's duplicate effects must not open duplicate event streams.
     if (message.type === 'webviewReady') { if (!ready) { ready = true; void connect() } return }
     if (message.type === 'closeAgent') message = { type: 'officeAgentAction', action: 'close', agentId: message.id, requestId: `browser-close-${Date.now()}` }
-    if (!['officeAgentAction', 'officeDeskAction', 'openAgentSession'].includes(String(message.type))) return
-    const action = message.type === 'openAgentSession' ? 'createWorker' : typeof message.action === 'string' ? message.action : 'unknown'
+    if (message.type === 'officeAgentAction') message = { ...message, viewId: officeViewId }
+    if (!['officeAgentAction', 'officeDeskAction', 'openAgentSession', 'setSoundEnabled', 'saveLayout'].includes(String(message.type))) return
+    const action = message.type === 'openAgentSession' ? 'createWorker' : typeof message.action === 'string' ? message.action : String(message.type)
     const requestId = typeof message.requestId === 'string' ? message.requestId : `browser-${Date.now()}-${++requestIndex}`
     message = { ...message, requestId }
-    if (!connection.connected || !csrf) { actionError(message, requestId, action, 'Reconnect to VS Code before using these controls.'); return }
+    if (!connection.connected || !csrf) { actionError(message, requestId, action, `Reconnect to ${ownerName()} before using these controls.`); return }
     const body = JSON.stringify(message)
     if (new TextEncoder().encode(body).byteLength > 64 * 1024) {
       const error = 'This message is too large. Shorten it to fit the office’s 64 KiB request limit.'
       actionError(message, requestId, action, error); return
     }
     const key = JSON.stringify([message.type, action, message.id ?? message.agentId ?? '', message.kind ?? ''])
-    if (actions.has(key)) { actionError(message, requestId, action, 'This action is already waiting for VS Code. Complete or cancel its existing dialog first.'); return }
-    if (actions.size >= 32) { actionError(message, requestId, action, 'Too many actions are waiting for VS Code. Complete or cancel a pending action first.'); return }
+    if (actions.has(key)) { actionError(message, requestId, action, `This action is already waiting for ${ownerName()}. Complete or cancel its existing dialog first.`); return }
+    if (actions.size >= 32) { actionError(message, requestId, action, `Too many actions are waiting for ${ownerName()}. Complete or cancel a pending action first.`); return }
     const operation = { message, requestId, action }; actions.set(key, operation); actionState(message, requestId, action, 'pending')
     const current = epoch
     void fetch('/api/message', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Office-CSRF': csrf }, body, signal: controller?.signal }).then(async response => {
@@ -125,14 +149,14 @@ function browserApi(): { postMessage(msg: unknown): void } {
       actions.delete(key)
       if (!response.ok) {
         const expired = response.status === 401 || response.status === 403
-        if (expired) { failActions(); csrf = undefined; epoch++; controller?.abort(); status('expired', 'Reopen Browser Office from VS Code to reconnect.') }
+        if (expired) { failActions(); csrf = undefined; epoch++; controller?.abort(); status('expired', reopenHint()) }
         const error = typeof body.error === 'string' ? body.error.slice(0, 1000) : 'The office action could not be completed.'
         actionError(message, requestId, action, error)
       } else if (body.status === 'completed' || body.status === 'cancelled') actionState(message, requestId, action, body.status)
-      else actionError(message, requestId, action, 'VS Code did not confirm the action outcome. Update Office Desk and reopen Browser Office before retrying.')
+      else actionError(message, requestId, action, `${ownerName()} did not confirm the action outcome. Reopen Office before retrying.`)
     }).catch(() => {
       if (current === epoch && !ended && actions.get(key) === operation) {
-        actions.delete(key); actionError(message, requestId, action, 'VS Code did not confirm the action. Check its pending dialogs and connection before retrying.')
+        actions.delete(key); actionError(message, requestId, action, `${ownerName()} did not confirm the action. Check its pending actions and connection before retrying.`)
       }
     })
   } }

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { pathToFileURL } from 'node:url';
 import { BrowserOfficeServer } from './browserOfficeServer.js';
 import type { AgentState } from './types.js';
 import type { AgentLaunchOptions } from './agentManager.js';
@@ -14,9 +15,11 @@ import {
 	sendExistingAgents,
 	sendLayout,
 	getProjectDirPath,
+	validateAttachedSession,
+	attachedAgentState,
 } from './agentManager.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
-import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, WORKSPACE_KEY_OPENCODE_SERVER_PORT, VIEW_ID, OFFICE_BRIDGE_READY_TIMEOUT_MS, OFFICE_SNAPSHOT_TIMEOUT_MS } from './constants.js';
+import { WORKSPACE_KEY_AGENT_SEATS, WORKSPACE_KEY_LAYOUT, GLOBAL_KEY_SOUND_ENABLED, WORKSPACE_KEY_OPENCODE_SERVER_PORT, VIEW_ID, OFFICE_BRIDGE_READY_TIMEOUT_MS, OFFICE_SNAPSHOT_TIMEOUT_MS } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
@@ -26,7 +29,21 @@ import { RuntimeController } from './runtime/runtimeController.js';
 import { normalizeAgentAction, normalizeAgentPanel, officeRepositories } from './agentControls.js';
 import { normalizeOfficeMetadata } from './runtime/officeTelemetry.js';
 
+interface StandaloneClient {
+	metadata: { workspaceRoot: string; url: string };
+	request(method: string, params: unknown): Promise<unknown>;
+	dispose(): void | Promise<void>;
+}
+
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
+	exportOfficeLayout(): { layout: Record<string, unknown> | null; seats: Record<string, unknown> } {
+		if (this.isStandaloneMirror) { throw new Error('The standalone Office owns its layout and seats.'); }
+		return structuredClone({
+			layout: readLayoutFromFile() ?? this.context.workspaceState.get<Record<string, unknown> | null>(WORKSPACE_KEY_LAYOUT, null),
+			seats: this.context.workspaceState.get<Record<string, unknown>>(WORKSPACE_KEY_AGENT_SEATS, {}),
+		});
+	}
+
 	nextAgentId = { current: 1 };
 	nextTerminalIndex = { current: 1 };
 	agents = new Map<number, AgentState>();
@@ -69,6 +86,44 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	private readonly browserListeners = new Set<(message: unknown) => void>();
 	private readonly browserBootstrap = new Map<string, Record<string, unknown>>();
 	private browserDeskState: Record<string, unknown> = { ready: false, workers: [], accounts: [], attention: [], repositories: [] };
+	private standaloneClient?: StandaloneClient;
+	private standaloneDirectory?: string;
+	private readonly standaloneMessages = new Map<string, Record<string, unknown>>();
+	get isStandaloneMirror(): boolean { return this.standaloneDirectory !== undefined; }
+
+	private standaloneMessage(input: unknown): void {
+		if (!input || typeof input !== 'object' || Array.isArray(input) || this.isDisposing) { return; }
+		const message = input as Record<string, unknown>, type = String(message.type);
+		if (!BROWSER_VIEW_MESSAGES.has(type) && !['officeHostCapabilities','officeBrowserBootstrap','officeBrowserReady','officeAgentActionState'].includes(type)) { return; }
+		if (type === 'officeAgentPanel' && Number.isInteger(message.agentId)) { this.panelStates.set(Number(message.agentId),normalizeAgentPanel(message.state)); }
+		if (type === 'officeHostCapabilities') { this.standaloneMessages.set(type,message); }
+		void this.webviewView?.webview.postMessage(message);
+	}
+	private async connectStandalone(directory: string): Promise<StandaloneClient> {
+		const helper = await import(pathToFileURL(path.join(this.extensionUri.fsPath,'dist','runtime','host-client.mjs')).href) as { connectOfficeHost(directory:string,options:{onMessage(input:unknown):void}):Promise<StandaloneClient> };
+		return helper.connectOfficeHost(directory,{onMessage:message=>this.standaloneMessage(message)});
+	}
+	private async standaloneMode(): Promise<boolean> {
+		const extension = vscode.extensions?.getExtension<{standaloneDirectory?:string;ready?:Promise<void>}>('dxd-dev-team.office-desk');
+		if (!extension) { return false; }
+		const desk = await extension.activate();
+		if (!desk || !('standaloneDirectory' in desk)) { return false; }
+		const directory = desk.standaloneDirectory;
+		if (!directory || !path.isAbsolute(directory)) { throw new Error('The standalone Office connection is not ready. Open Office Desk and reconnect.'); }
+		this.standaloneDirectory = directory;
+		void this.webviewView?.webview.postMessage({type:'officeHostCapabilities',standalone:true,hostOwnsSeats:true});
+		await desk.ready;
+		if (this.isDisposing) { throw new Error('The Office view is shutting down.'); }
+		this.standaloneClient ??= await this.connectStandalone(directory);
+		if (this.isDisposing) { await this.standaloneClient.dispose(); throw new Error('The Office view is shutting down.'); }
+		await this.standaloneClient.request('subscribe', {});
+		return true;
+	}
+	private async replayStandalone(view: vscode.WebviewView, handshake: number): Promise<void> {
+		const result = await this.standaloneClient?.request('bootstrap', {});
+		if (this.isDisposing || this.webviewView !== view || this.nativeHandshakeIndex !== handshake) { return; }
+		if (Array.isArray(result)) { for (const message of result) { this.standaloneMessage(message); } }
+	}
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -112,6 +167,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	async openBrowserOffice(): Promise<string> {
 		await this.browserClosing;
 		await this.ensureReady(false);
+		if (this.standaloneClient) {
+			const result = await this.standaloneClient.request('openBrowser', {}) as { url?: unknown };
+			if (typeof result?.url !== 'string') { throw new Error('The standalone Office did not return a browser link.'); }
+			return result.url;
+		}
 		this.browserServer ??= new BrowserOfficeServer({
 			assetsDirectory: path.join(this.extensionUri.fsPath, 'dist', 'webview'),
 			port: vscode.workspace.getConfiguration('office-pixel-agents').get<number>('browserPort', 18084),
@@ -170,7 +230,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			const agent = this.agents.get(action.agentId);
 			if (!agent?.readOnly || !agent.officeMetadata?.workerId) { throw new Error('Choose a managed office worker.'); }
 			if (action.action === 'open') {
-				return vscode.commands.executeCommand('office-desk.browserAction', { action: 'chatWorker', id: agent.officeMetadata.workerId, browser: true });
+				return vscode.commands.executeCommand('office-desk.browserAction', { action: 'chatWorker', id: agent.officeMetadata.workerId, browser: true, ...(action.viewId ? {viewId:action.viewId} : {}) });
 			} else { return vscode.commands.executeCommand('office-desk.browserAgentAction', action); }
 		}
 		if (message.type === 'officeDeskAction') {
@@ -273,6 +333,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 	async getServerConnection(): Promise<OfficeServerConnection> {
 		await this.ensureReady();
+		if (this.isStandaloneMirror) { throw new Error('The standalone Office owns its runtime. Use its authenticated Office controls.'); }
 		if (isOfficeDeskManaged()) {
 			const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 			if (!workspaceRoot) { throw new Error('Open a local workspace to use the office.'); }
@@ -345,6 +406,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			throw new Error('Open Pixel Agents: An existing absolute workspace directory is required.');
 		}
 		await this.ensureReady();
+		if (this.isStandaloneMirror) { throw new Error('Create workers through the standalone Office controls.'); }
 		const metadata = input.metadata ? normalizeOfficeMetadata(input.metadata) : undefined;
 		if (this.repositories.length && (!metadata?.repoId || !this.repositories.some(repo => repo.id === metadata.repoId))) { throw new Error('Choose one of the configured office repositories.'); }
 		const reservationId = ++this.snapshotIndex;
@@ -366,6 +428,63 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		return binding;
 	}
 
+	async attachManagedAgent(input: OfficeAgentInput & { sessionId: string; agentId?: number }): Promise<OfficeAgentBinding> {
+		const operation = this.managedCreateTail.then(async () => {
+			await this.ensureReady();
+			if (this.isStandaloneMirror) { throw new Error('The standalone Office owns worker conversations.'); }
+			const displayName = input.displayName?.trim();
+			if (!displayName || displayName.length > 100 || /[\x00-\x1f\x7f]/.test(displayName)) { throw new Error('Choose a worker display name of 1–100 characters.'); }
+			const metadata = input.metadata ? normalizeOfficeMetadata(input.metadata) : undefined;
+			const previous = input.agentId !== undefined ? this.agents.get(input.agentId) : [...this.agents.values()].find(agent => metadata?.workerId && agent.officeMetadata?.workerId === metadata.workerId);
+			if (input.agentId !== undefined && !previous || previous && !previous.readOnly) { throw new Error('Choose an existing managed worker.'); }
+			if (previous?.officeMetadata?.workerId && metadata?.workerId !== previous.officeMetadata.workerId) { throw new Error('This character belongs to another worker.'); }
+			const cwd = await validateAttachedSession(this.runtime, input.sessionId, input.cwd ?? previous?.projectDir ?? '');
+			if (previous && ((metadata?.role ?? 'builder') !== (previous.officeMetadata?.role ?? 'builder') || metadata?.repoId !== previous.officeMetadata?.repoId || metadata?.managerForRole !== previous.officeMetadata?.managerForRole)) {
+				throw new Error('Update this worker’s role and home repository before attaching its conversation.');
+			}
+			if (this.repositories.length && (!metadata?.repoId || !this.repositories.some(repo => repo.id === metadata.repoId))) { throw new Error('Choose a configured Office repository.'); }
+			const reservation = previous ? undefined : ++this.snapshotIndex;
+			if (reservation !== undefined && !await this.reserveComputerDesk(reservation, this.metadataSeatRole(metadata), undefined, metadata?.repoId)) { throw new Error('Add an available computer desk before starting another worker.'); }
+			let candidate: AgentState | undefined;
+			try {
+				const id = previous?.id ?? this.nextAgentId.current;
+				candidate = attachedAgentState(this.runtime, id, input.sessionId, cwd, { displayName, readOnly: true, metadata });
+				const snapshot = new Map(this.agents); snapshot.set(id, candidate);
+				await persistAgents(snapshot, this.context);
+				if (this.isDisposing || previous && this.agents.get(id) !== previous) {
+					await this.persistAgents(); throw new Error('The worker changed while its conversation was attaching.');
+				}
+				this.agents.set(id, candidate);
+				if (!previous) { this.nextAgentId.current++; this.nextTerminalIndex.current++; }
+				this.controller.removeAgent(id); this.controller.registerAgent(candidate);
+				this.panelStates.delete(id);
+				if (!previous) { void this.webview?.postMessage({ type: 'agentCreated', id, managed: true, reservationId: reservation, role: metadata?.role ?? 'builder', managerForRole: metadata?.managerForRole, repoId: metadata?.repoId, repoName: metadata?.repoName }); }
+				previous?.terminalRef.dispose(); candidate.terminalRef.show(true);
+				await this.controller.hydrateAll().catch(() => undefined);
+				const binding = this.managedBinding(candidate); this.bridgeEvents.fire({ type: 'changed', agentId: id, binding });
+				return binding;
+			} catch (error) { if (candidate && this.agents.get(candidate.id) !== candidate) { candidate.terminalRef.dispose(); } throw error; }
+			finally { if (reservation !== undefined) { void this.webview?.postMessage({ type: 'officeSeatRelease', requestId: reservation }); } }
+		});
+		this.managedCreateTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	async detachManagedAgent(agentId: number, expectedSessionId?: string): Promise<void> {
+		const operation = this.managedCreateTail.then(async () => {
+			await this.ensureReady();
+			if (this.isStandaloneMirror) { throw new Error('The standalone Office owns worker conversations.'); }
+			const agent = this.agents.get(agentId);
+			if (!agent) { return; }
+			if (expectedSessionId !== undefined && agent.sessionId !== expectedSessionId) { return; }
+			if (!agent.readOnly) { throw new Error('Choose a managed Office worker.'); }
+			const snapshot = new Map(this.agents); snapshot.delete(agentId); await persistAgents(snapshot, this.context);
+			this.removeAgentUi(agentId, false); agent.terminalRef.dispose();
+			if (agent.sessionId) { this.bridgeEvents.fire({ type: 'closed', agentId, sessionId: agent.sessionId }); }
+		});
+		this.managedCreateTail = operation.catch(() => undefined); return operation;
+	}
+
 	private persistAgentMetadata(agentId: number, metadata: OfficeWorkerMetadata): PromiseLike<void> {
 		const agent = this.agents.get(agentId);
 		if (!agent) { throw new Error('The worker is no longer available.'); }
@@ -379,13 +498,15 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	setManagedMetadata(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
-		const operation = this.metadataTail.then(() => this.setManagedMetadataNow(agentId, patch));
-		this.metadataTail = operation.catch(() => undefined);
+		const operation = this.managedCreateTail.then(() => this.setManagedMetadataNow(agentId, patch));
+		this.managedCreateTail = operation.catch(() => undefined);
+		this.metadataTail = this.managedCreateTail;
 		return operation;
 	}
 
 	private async setManagedMetadataNow(agentId: number, patch: OfficeWorkerMetadata): Promise<OfficeAgentBinding> {
 		await this.ensureReady(false);
+		if (this.isStandaloneMirror) { throw new Error('The standalone Office owns worker metadata.'); }
 		const agent = this.agents.get(agentId);
 		if (!agent?.readOnly) { throw new Error('Open Pixel Agents: No managed agent exists with this id.'); }
 		const previous = agent.officeMetadata;
@@ -433,6 +554,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	async setRepositories(input: OfficeRepository[]): Promise<void> {
 		const repositories = officeRepositories(input);
 		await this.ensureReady(false);
+		if (this.isStandaloneMirror) { throw new Error('Configure repositories in the standalone Office.'); }
 		const requestId = ++this.snapshotIndex;
 		await new Promise<void>((resolve, reject) => {
 			const timer = setTimeout(() => { this.pendingRepositories.delete(requestId); reject(new Error('The office did not acknowledge its repository areas.')); }, OFFICE_SNAPSHOT_TIMEOUT_MS);
@@ -444,10 +566,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 	async setAgentPanelState(agentId: number, state: unknown): Promise<void> {
 		await this.ensureReady(false);
+		if (this.isStandaloneMirror) { throw new Error('The standalone Office owns agent controls.'); }
 		if (!this.agents.get(agentId)?.readOnly) { throw new Error('There is no managed worker for these controls.'); }
 		const normalized = normalizeAgentPanel(state);
 		this.panelStates.set(agentId, normalized);
-		void this.webview?.postMessage({ type: 'officeAgentPanel', agentId, state: normalized });
+		void this.webview?.postMessage({ type: 'officeAgentPanel', agentId, state: normalized, ...(normalized.viewId ? {viewId:normalized.viewId} : {}) });
 	}
 
 	async openAgentPanel(agentId: number): Promise<void> {
@@ -476,6 +599,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 	async listManagedAgents(): Promise<OfficeAgentBinding[]> {
 		await this.ensureReady();
+		if (this.standaloneClient) { return this.standaloneClient.request('listAgents', {}) as Promise<OfficeAgentBinding[]>; }
 		return [...this.agents.values()].filter((agent) => agent.readOnly).map((agent) => this.managedBinding(agent));
 	}
 
@@ -518,6 +642,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 	async closeManagedAgent(agentId: number): Promise<void> {
 		await this.ensureReady();
+		if (this.isStandaloneMirror) { throw new Error('Close worker conversations through the standalone Office controls.'); }
 		const agent = this.agents.get(agentId);
 		if (agent && !agent.readOnly) {
 			throw new Error('Open Pixel Agents: This agent is not managed by the office bridge.');
@@ -605,6 +730,26 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private async handleMessage(message: Record<string, unknown>): Promise<void> {
+		if (message.type !== 'webviewReady' && this.isStandaloneMirror) {
+			if (!this.standaloneClient) { throw new Error('Reconnect to the standalone Office before using its controls.'); }
+			if (message.type === 'officeAgentAction') {
+				let action;
+				try { action = normalizeAgentAction(message); }
+				catch (value) { this.standaloneMessage({type:'officeAgentActionState',agentId:message.agentId,requestId:message.requestId,action:message.action,state:'failed',error:value instanceof Error ? value.message : 'Invalid Office action.'}); return; }
+				const emit = (state:string,error?:string) => this.standaloneMessage({type:'officeAgentActionState',agentId:action.agentId,requestId:action.requestId,action:action.action,state,...(error?{error}:{})});
+				emit('pending');
+				try {
+					const result = await vscode.commands.executeCommand<{status?:unknown}>('office-desk.browserAgentAction',action);
+					emit(result?.status === 'cancelled' ? 'cancelled' : 'completed');
+				} catch (value) { const error=value instanceof Error ? value.message : 'The standalone Office action failed.'; emit('failed',error); this.standaloneMessage({type:'officeAgentActionError',agentId:action.agentId,requestId:action.requestId,error}); }
+				return;
+			}
+			if (['officeSeatCapacity','officeRoleSeatApplied','officeRepositoriesApplied','saveAgentSeats','officeSnapshot','officeSnapshotReady'].includes(String(message.type))) { return; }
+			if (message.type === 'openAgentSession') { await vscode.commands.executeCommand('office-desk.createWorker'); return; }
+			if (message.type === 'officeDeskAction') { await vscode.commands.executeCommand('office-desk.browserAction',browserDeskAction(message)); return; }
+			if (['saveLayout','setSoundEnabled','focusAgent','closeAgent'].includes(String(message.type))) { await this.standaloneClient.request('dispatch',message); return; }
+			throw new Error('Use the standalone Office for this control.');
+		}
 		if (message.type === 'officeAgentAction') {
 			try {
 				const action = normalizeAgentAction(message);
@@ -689,7 +834,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			try {
 				await this.beginInitialization();
 				if (this.isDisposing || !view || this.webviewView !== view || handshake !== this.nativeHandshakeIndex) { return; }
-				if (replay) { this.replayNativeView(view.webview); }
+				if (replay) { if (this.standaloneClient) { await this.replayStandalone(view,handshake); } else { this.replayNativeView(view.webview); } }
 				this.resolveReady();
 			} catch { if (this.initialization) { this.rejectReady(new Error('Open Pixel Agents: Office initialization failed.')); } }
 		} else if (message.type === 'openSessionsFolder') {
@@ -753,6 +898,8 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private async bootstrapWebview(): Promise<void> {
+		try { if (await this.standaloneMode()) { return; } }
+		catch { throw new OfficeStartupFailure('The standalone Office could not connect. Start its host, then reopen this view.'); }
 		const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 		const preferredPort = this.context.workspaceState.get<number | undefined>(WORKSPACE_KEY_OPENCODE_SERVER_PORT, undefined);
 		if (workspaceRoot) {
@@ -958,6 +1105,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	dispose() {
+		void this.standaloneClient?.dispose(); this.standaloneClient = undefined;
 		for (const listener of this.viewListeners.splice(0)) { listener.dispose(); }
 		this.isDisposing = true;
 		void this.disposeBrowserOffice().catch(() => undefined);
@@ -1000,7 +1148,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 }
 
 
-const BROWSER_VIEW_MESSAGES = new Set(['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded', 'officeRepositories', 'existingAgents', 'agentCreated', 'agentClosed', 'runtimeSnapshot', 'agentRuntimeReplace', 'officeAgentPanel', 'officeAgentActionError', 'officeDeskState', 'officeAgentSeats']);
+const BROWSER_VIEW_MESSAGES = new Set(['settingsLoaded', 'characterSpritesLoaded', 'floorTilesLoaded', 'wallTilesLoaded', 'furnitureAssetsLoaded', 'layoutLoaded', 'officeRepositories', 'existingAgents', 'agentCreated', 'agentClosed', 'runtimeSnapshot', 'agentRuntimeReplace', 'officeAgentPanel', 'officeAgentActionError', 'officeDeskState', 'officeAgentSeats', 'officeBrowserActionState', 'officeAccountLoginError', 'officeBrowserApiForm']);
 class OfficeStartupFailure extends Error {}
 const BROWSER_DESK_ACTIONS = new Set(['createWorker', 'createManager', 'startWorker', 'abortWorker', 'closeWorker', 'chatWorker', 'openAgentChats', 'editWorker', 'removeWorker', 'focusAttention', 'permission', 'question', 'rejectQuestion', 'dismissAttention', 'addAccount', 'connectAccount', 'renameAccount', 'disconnectAccount', 'removeAccount', 'addRepository', 'removeRepository', 'showSetup']);
 const publicText = (value: unknown, limit = 100): string | undefined => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, limit) : undefined;

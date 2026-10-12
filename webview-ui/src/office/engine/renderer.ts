@@ -2,6 +2,8 @@ import { TileType, TILE_SIZE, CharacterState } from '../types.js'
 import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor, OfficeZone } from '../types.js'
 import { getCachedSprite, getOutlineSprite } from '../sprites/spriteCache.js'
 import { getCharacterSprites } from '../sprites/spriteData.js'
+import { repositoryColor } from '../sprites/repoAppearance.js'
+import { activitySummary } from './activitySummary.js'
 import { getCharacterSprite } from './characters.js'
 import { renderMatrixEffect } from './matrixEffect.js'
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles.js'
@@ -129,7 +131,8 @@ export function renderScene(
 
   // Characters
   for (const ch of characters) {
-    const sprites = getCharacterSprites(ch.palette, ch.hueShift)
+    const repoId = ch.officeLabel.activeRepoId ?? ch.officeLabel.repoId
+    const sprites = getCharacterSprites(ch.palette, ch.hueShift, repoId ? repositoryColor(repoId) : undefined)
     const spriteData = getCharacterSprite(ch, sprites)
     const cached = getCachedSprite(spriteData, zoom)
     // Sitting offset: shift character down when seated so they visually sit in the chair
@@ -461,6 +464,7 @@ export function renderBubbles(
   offsetX: number,
   offsetY: number,
   zoom: number,
+  connected = true,
 ): void {
   for (const ch of characters) {
     const label = ch.officeLabel
@@ -503,10 +507,12 @@ export function renderBubbles(
       ctx.fillStyle = index === 0 ? '#f2f5e8' : index === 1 ? accent : '#b4ccc4'
       ctx.fillText(lines[index], x + width / 2, y + padding + lineHeight * (index + 0.5))
     }
-    const speech = label.speech
-    if (speech && speech.expiresAt > Date.now()) {
+    const speech = connected && label.speech && label.speech.expiresAt > Date.now() ? label.speech : undefined
+    const activeContext = label.activeRepoName && label.activeRepoId !== label.repoId ? `${label.activeRepoName} · ` : ''
+    const bubbleText = speech?.text ?? `${activeContext}${activitySummary(label, ch.currentTool, connected)}`
+    {
       const maxWidth = OFFICE_SPEECH_MAX_WIDTH_PX * scale
-      const words = speech.text.split(' ')
+      const words = bubbleText.split(' ')
       const spokenLines: string[] = []
       let current = ''
       for (const word of words) {
@@ -603,6 +609,7 @@ export function renderFrame(
   layoutCols?: number,
   layoutRows?: number,
   zones?: OfficeZone[],
+  connected = true,
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
@@ -661,8 +668,38 @@ export function renderFrame(
   const hoveredId = selection?.hoveredAgentId ?? null
   renderScene(ctx, allFurniture, characters, offsetX, offsetY, zoom, selectedId, hoveredId)
 
+  // A chair identifies its computer desk even in an existing custom layout.
+  // Nameplates are render-only; they never rewrite the user's furniture.
+  if (selection) {
+    const named = new Set<string>()
+    for (const seat of selection.seats.values()) {
+      if (!seat.computerDeskId || named.has(seat.computerDeskId)) continue
+      const desk = furniture.find(item => item.uid === seat.computerDeskId)
+      if (!desk) continue
+      const occupant = characters.find(ch => ch.seatId === seat.uid)
+      const repoId = seat.repoId ?? occupant?.officeLabel.repoId
+      const repoName = zones?.find(zone => zone.repoId === repoId)?.repoName ?? occupant?.officeLabel.repoName
+      if (!repoId || !repoName) continue
+      named.add(seat.computerDeskId)
+      ctx.save()
+      ctx.font = `${OFFICE_LABEL_FONT_PX * zoom}px monospace`
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      const maxWidth = Math.max(64, desk.sprite[0].length + 16) * zoom
+      let name = repoName
+      while (name.length > 1 && ctx.measureText(`${name}…`).width > maxWidth) name = name.slice(0, -1)
+      if (name !== repoName) name += '…'
+      const x = Math.round(offsetX + (desk.x + desk.sprite[0].length / 2) * zoom)
+      const y = Math.round(offsetY + (desk.y + desk.sprite.length + 19) * zoom)
+      const width = ctx.measureText(name).width + 8 * zoom
+      ctx.fillStyle = '#17282be8'; ctx.fillRect(x - width / 2, y - 6 * zoom, width, 12 * zoom)
+      ctx.fillStyle = repositoryColor(repoId); ctx.fillRect(x - width / 2, y + 5 * zoom, width, zoom)
+      ctx.fillStyle = '#e7f0ed'; ctx.fillText(name, x, y)
+      ctx.restore()
+    }
+  }
+
   // Speech bubbles (always on top of characters)
-  renderBubbles(ctx, characters, offsetX, offsetY, zoom)
+  renderBubbles(ctx, characters, offsetX, offsetY, zoom, connected)
 
   // Editor overlays
   if (editor) {

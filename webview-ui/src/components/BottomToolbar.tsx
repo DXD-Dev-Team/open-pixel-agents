@@ -2,6 +2,7 @@ import { useState, useSyncExternalStore } from 'react'
 import { SettingsModal } from './SettingsModal.js'
 import type { WorkspaceFolder } from '../hooks/useExtensionMessages.js'
 import { isBrowserOffice, officeConnection, vscode } from '../vscodeApi.js'
+import type { OfficeLayout } from '../office/types.js'
 
 interface BottomToolbarProps {
   isEditMode: boolean
@@ -10,6 +11,7 @@ interface BottomToolbarProps {
   onToggleEditMode: () => void
   isDebugMode: boolean
   onToggleDebugMode: () => void
+  getLayout: () => OfficeLayout
 }
 
 const panelStyle: React.CSSProperties = {
@@ -54,6 +56,7 @@ export function BottomToolbar({
   onToggleEditMode,
   isDebugMode,
   onToggleDebugMode,
+  getLayout,
 }: BottomToolbarProps) {
   const { connected } = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
   const [hovered, setHovered] = useState<string | null>(null)
@@ -145,7 +148,7 @@ export function BottomToolbar({
       >
         Layout
       </button>}
-      {!isBrowserOffice && <div style={{ position: 'relative' }}>
+      <div style={{ position: 'relative' }}>
         <button
           onClick={() => setIsSettingsOpen((v) => !v)}
           onMouseEnter={() => setHovered('settings')}
@@ -167,8 +170,9 @@ export function BottomToolbar({
           onClose={() => setIsSettingsOpen(false)}
           isDebugMode={isDebugMode}
           onToggleDebugMode={onToggleDebugMode}
+          getLayout={getLayout}
         />
-      </div>}
+      </div>
     </div>
   )
 }

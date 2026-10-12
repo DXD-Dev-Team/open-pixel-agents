@@ -244,6 +244,7 @@ function App() {
         onToggleEditMode={editor.handleToggleEditMode}
         isDebugMode={isDebugMode}
         onToggleDebugMode={handleToggleDebugMode}
+        getLayout={() => officeState.getLayout()}
       />
 
       {editor.isEditMode && editor.isDirty && (

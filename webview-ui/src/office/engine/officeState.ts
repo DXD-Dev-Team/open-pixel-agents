@@ -168,9 +168,9 @@ export class OfficeState {
     return result
   }
 
-  configureRepositories(repositories: OfficeRepository[]): void {
+  configureRepositories(repositories: OfficeRepository[], updateLayout = true): void {
     this.repositories = repositories
-    if (this.layout.officeDefault) this.rebuildFromLayout(createRepositoryLayout(repositories))
+    if (updateLayout && this.layout.officeDefault) this.rebuildFromLayout(createRepositoryLayout(repositories))
   }
 
   availableComputerDesks(): number {

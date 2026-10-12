@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { realpath } from 'node:fs/promises';
 import type { AgentState, PersistedAgent } from './types.js';
 import type { RuntimeAdapter } from './runtime/runtimeAdapter.js';
 import { cancelWaitingTimer, cancelPermissionTimer } from './timerManager.js';
@@ -56,6 +57,29 @@ function createAgentState(id: number, terminal: vscode.Terminal, projectDir: str
 		permissionSent: false,
 		hadToolsInTurn: false,
 	};
+}
+
+/** Attach is a view binding only: the companion owns session creation/deletion. */
+export async function validateAttachedSession(runtime: RuntimeAdapter, sessionId: string, cwd: string): Promise<string> {
+	if (typeof sessionId !== 'string' || !sessionId || /[\x00-\x1f\x7f]/.test(sessionId) || !path.isAbsolute(cwd)) {
+		throw new Error('Choose an existing worker conversation and absolute repository directory.');
+	}
+	const canonical = await realpath(cwd);
+	const session = await runtime.getSession(sessionId, canonical);
+	if (session.id !== sessionId || session.parentID || await realpath(session.directory).catch(() => undefined) !== canonical) {
+		throw new Error('This conversation does not belong to the selected repository.');
+	}
+	return canonical;
+}
+
+export function attachedAgentState(runtime: RuntimeAdapter, id: number, sessionId: string, cwd: string,
+	options: AgentLaunchOptions, terminalFactory = createReadOnlyAttachTerminal): AgentState {
+	const port = runtime.getServerPort();
+	if (port === null) { throw new Error('The owned OpenCode runtime has no resolved port.'); }
+	const terminal = terminalFactory(options.displayName || `Office worker ${id}`, sessionId, cwd, port);
+	const agent = createAgentState(id, terminal, cwd, sessionId, port);
+	agent.readOnly = true; agent.displayName = options.displayName; agent.officeMetadata = options.metadata;
+	return agent;
 }
 
 export async function launchNewTerminal(

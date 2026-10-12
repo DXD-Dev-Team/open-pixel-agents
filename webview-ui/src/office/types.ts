@@ -73,6 +73,7 @@ export interface Seat {
 }
 
 export interface FurnitureInstance {
+  uid?: string
   sprite: SpriteData
   /** Pixel x (top-left) */
   x: number
@@ -172,6 +173,9 @@ export interface OfficeLabel {
   repoId?: string
   repoName?: string
   managerRepoIds?: string[]
+  managerPaused?: boolean
+  activeRepoId?: string
+  activeRepoName?: string
   speech?: { text: string; expiresAt: number; source: 'assistant' | 'task' }
 }
 

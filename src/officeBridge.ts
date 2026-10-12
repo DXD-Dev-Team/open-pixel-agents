@@ -9,12 +9,13 @@ export type OfficeProviderKind = 'claude' | 'codex' | 'grok';
 export type OfficeRole = 'builder' | 'security-reviewer' | 'verifier' | 'manager';
 export type OfficeManagerScope = 'all' | 'builder' | 'security-reviewer' | 'verifier';
 export type OfficeManagerMode = 'auto' | 'human-approval';
-export type OfficeAgentActionName = 'open' | 'send' | 'start' | 'stop' | 'close' | 'role' | 'manager-mode' | 'assign-team' | 'approve' | 'reject' | 'attention' | 'sign-in' | 'change-account' | 'add-account' | 'manager-repos' | 'manager-scope';
+export type OfficeAgentActionName = 'open' | 'send' | 'start' | 'restart' | 'stop' | 'close' | 'role' | 'manager-mode' | 'assign-team' | 'approve' | 'reject' | 'attention' | 'sign-in' | 'change-account' | 'add-account' | 'manager-repos' | 'manager-scope' | 'thread-select' | 'thread-new' | 'thread-rename' | 'thread-archive' | 'thread-more' | 'thread-fork' | 'thread-compact' | 'reset-usage' | 'usage-refresh' | 'credit-reset' | 'worker-model' | 'worker-mode';
 
 export interface OfficeAgentAction {
 	type: 'agent-action';
 	agentId: number;
 	requestId: string;
+	viewId?: string;
 	action: OfficeAgentActionName;
 	text?: string;
 	role?: OfficeRole;
@@ -25,14 +26,33 @@ export interface OfficeAgentAction {
 	kind?: OfficeProviderKind;
 	repoIds?: string[];
 	scopeRole?: OfficeManagerScope;
+	threadId?: string;
+	title?: string;
+	before?: string;
+	modelId?: string;
+	workerMode?: 'fast' | 'reasoning';
+	resetTicket?: string;
+	confirmed?: boolean;
+	repoId?: string;
 }
 
 export interface OfficeRepository { id: string; name: string }
 
 export interface OfficePanelAccount { id: string; name: string; kind: OfficeProviderKind; connected: boolean; authType?: string; loginName?: string }
 
+export interface OfficeThread { id: string; workerId: string; repoId: string; title: string; kind: 'root' | 'child'; parentThreadId?: string; accountId: string; providerId: string; modelId: string; mode: 'fast' | 'reasoning'; createdAt: number; updatedAt: number; archived: boolean; unavailable?: boolean; recoveredUnknown?: boolean }
+export interface OfficePanelCapabilities { threads?: boolean; usageReset?: boolean; threadFork?: boolean; threadCompact?: boolean; creditReset?: boolean }
+
 export interface OfficeAgentPanelState {
-	worker: { id: string; name: string; role: OfficeRole; status: OfficeStatus; started: boolean; repoId?: string; repoName?: string; providerKind?: OfficeProviderKind; modelId?: string; accountId?: string };
+	viewId?: string;
+	worker: { id: string; name: string; role: OfficeRole; status: OfficeStatus; started: boolean; repoId?: string; repoName?: string; providerKind?: OfficeProviderKind; modelId?: string; accountId?: string; mode?: 'fast' | 'reasoning' };
+	modelOptions?: Array<{ id: string; name: string }>;
+	capabilities?: OfficePanelCapabilities;
+	threads?: { items: OfficeThread[]; selectedId?: string };
+	chatThreadId?: string;
+	chatPage?: { hasMore: boolean; before?: string; older?: boolean };
+	accountQuota?: { available: boolean; reason?: string; accountName?: string; limits?: Array<{ id: string; name?: string; usedPercent: number; windowDurationMins: number; resetsAt: number }>; reset?: { availableCount?: number; ticket?: string } };
+	usage?: { tokens: number; estimatedCost?: number; resettable: boolean; totalTokens?: number; threadTokens?: number; byRepository?: Array<{ id: string; tokens: number; estimatedCost?: number }> };
 	chat: Array<{ id: string; role: 'user' | 'assistant'; text: string; createdAt: number }>;
 	pending: boolean;
 	busy: boolean;
@@ -72,6 +92,9 @@ export interface OfficeWorkerMetadata {
 	repoId?: string;
 	repoName?: string;
 	managerRepoIds?: string[];
+	managerPaused?: boolean;
+	activeRepoId?: string;
+	activeRepoName?: string;
 }
 
 export interface OfficeSpeech {
@@ -94,6 +117,9 @@ export interface OfficeLabel {
 	repoId?: string;
 	repoName?: string;
 	managerRepoIds?: string[];
+	managerPaused?: boolean;
+	activeRepoId?: string;
+	activeRepoName?: string;
 }
 
 export interface OfficeAgentInput {
@@ -130,10 +156,14 @@ export interface OfficeVisualSnapshot {
 export interface OfficeBridgeApi {
 	readonly version: 1;
 	readonly runtimeOwnershipVersion: 1;
+	readonly threadHistoryVersion: 1;
+	exportOfficeLayout?(): Promise<{ layout: Record<string, unknown> | null; seats: Record<string, unknown> }>;
 	configureRuntime(options: { executable: string; env: Record<string, string> }): void;
 	shutdownRuntime(): Promise<void>;
 	getServer(): Promise<OfficeServerConnection>;
 	createAgent(input: OfficeAgentInput): Promise<OfficeAgentBinding>;
+	attachAgent(input: OfficeAgentInput & { sessionId: string; agentId?: number }): Promise<OfficeAgentBinding>;
+	detachAgent(agentId: number, expectedSessionId?: string): Promise<void>;
 	listAgents(): Promise<OfficeAgentBinding[]>;
 	focusAgent(agentId: number): Promise<void>;
 	closeAgent(agentId: number): Promise<void>;
