@@ -25,6 +25,16 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
+function assertLauncherGuidance(message) {
+  assert.equal(typeof message, 'string');
+  assert.match(message, /Office launcher/);
+  assert.doesNotMatch(message, /VS\s*Code/i, 'Shared transport errors must work for standalone and editor-owned Offices.');
+}
+async function unauthorized(response) {
+  assert.equal(response.status, 401);
+  assertLauncherGuidance((await response.json()).error);
+  assert.equal(response.headers.get('set-cookie'), null, 'Unauthorized requests must not create or refresh a browser session.');
+}
 async function until(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return;
@@ -160,23 +170,23 @@ test('token exchange rejects foreign Origin, hostile Host, non-JSON bodies, and 
   assert.equal((await value.post('/api/connect', '{')).status, 400);
   assert.equal((await value.post('/api/connect', { token: value.capability, extra: true })).status, 400);
   const session = await value.connect();
-  assert.equal((await value.post('/api/connect', { token: value.capability }, session)).status, 401, 'Consumed token must not silently resume a cookie.');
-  assert.equal((await value.post('/api/connect', { token: 'invalid' }, session)).status, 401);
+  await unauthorized(await value.post('/api/connect', { token: value.capability }, session));
+  await unauthorized(await value.post('/api/connect', { token: 'invalid' }, session));
   const resumed = await value.post('/api/connect', {}, session);
   assert.equal(resumed.status, 200); assert.equal((await resumed.json()).csrf, session.csrf);
-  assert.equal((await value.post('/api/connect', {})).status, 401);
+  await unauthorized(await value.post('/api/connect', {}));
 });
 
 test('messages and SSE require cookie plus CSRF and dispatch only through the supplied provider boundary', async t => {
   const value = await fixture(t); const session = await value.connect();
   const message = { type: 'fixtureAllowed', text: 'Public office request' };
-  assert.equal((await value.post('/api/message', message)).status, 401);
+  await unauthorized(await value.post('/api/message', message));
   assert.equal((await value.post('/api/message', message, session, { 'X-Office-CSRF': '' })).status, 403);
   assert.equal((await value.post('/api/message', message, session, { 'X-Office-CSRF': 'é'.repeat(session.csrf.length) })).status, 403);
   assert.equal((await value.post('/api/message', message, session, { Origin: 'https://hostile.invalid' })).status, 403);
   assert.equal((await raw(value.origin, '/api/message', { method: 'POST', headers: { Host: `localhost:${value.url.port}`, Origin: value.origin,
     Cookie: session.cookie, 'X-Office-CSRF': session.csrf, 'Content-Type': 'application/json' }, chunks: [JSON.stringify(message)] })).status, 403);
-  assert.equal((await fetch(`${value.origin}/api/events`)).status, 401);
+  await unauthorized(await fetch(`${value.origin}/api/events`));
   assert.equal((await fetch(`${value.origin}/api/events`, { headers: { Cookie: session.cookie } })).status, 403);
   assert.equal((await fetch(`${value.origin}/api/events`, { headers: { Cookie: session.cookie, 'X-Office-CSRF': session.csrf, Origin: 'https://hostile.invalid' } })).status, 403);
   assert.deepEqual(value.control.messages, []);
@@ -277,7 +287,7 @@ test('launch links expire, pending capabilities are bounded, and each start retu
   const now = original();
   Date.now = () => now + 6 * 60_000;
   try {
-    assert.equal((await value.post('/api/connect', { token: value.capability })).status, 401);
+    await unauthorized(await value.post('/api/connect', { token: value.capability }));
     const link = new URL((await value.server.start()).url);
     const session = await value.connect(new URLSearchParams(link.hash.slice(1)).get('office-token'));
     assert.equal(typeof session.csrf, 'string');
@@ -288,15 +298,15 @@ test('expired cookies cannot resume or dispatch and a restart cannot accept the 
   const value = await fixture(t); const session = await value.connect();
   const original = Date.now; const now = original(); Date.now = () => now + 31 * 60_000;
   try {
-    assert.equal((await value.post('/api/connect', {}, session)).status, 401);
-    assert.equal((await value.post('/api/message', { type: 'fixtureAllowed' }, session)).status, 401);
+    await unauthorized(await value.post('/api/connect', {}, session));
+    await unauthorized(await value.post('/api/message', { type: 'fixtureAllowed' }, session));
   } finally { Date.now = original; }
   await value.server.dispose();
   const replacement = new BrowserOfficeServer({ assetsDirectory: value.assetsDirectory, connect: send => value.control.connect(send), dispatch: async () => {} });
   t.after(() => replacement.dispose());
   const origin = new URL((await replacement.start()).url).origin;
   const response = await fetch(`${origin}/api/connect`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', Cookie: session.cookie }, body: '{}' });
-  assert.equal(response.status, 401);
+  await unauthorized(response);
 });
 
 test('SSE stream and browser session limits prevent unbounded subscriptions', async t => {
@@ -360,7 +370,7 @@ test('dispose revokes sessions, closes SSE and sockets, and prevents restarting 
   await first;
   await until(() => value.control.disposals === 1);
   await stream.close();
-  await assert.rejects(value.server.start(), /closed/i);
+  await assert.rejects(value.server.start(), error => { assert.match(error.message, /closed/i); assertLauncherGuidance(error.message); return true; });
   await assert.rejects(fetch(value.origin, { signal: AbortSignal.timeout(1000) }));
 });
 
@@ -405,7 +415,7 @@ test('a failed loopback listen releases its failed server before a subsequent re
     connect: async () => ({ dispose() {} }), dispatch: async () => {} });
   t.after(() => retry.dispose());
   const attempts = await Promise.allSettled([retry.start(), retry.start()]);
-  assert(attempts.every(attempt => attempt.status === 'rejected' && /port .*already in use.*workspace.*settings/i.test(attempt.reason.message)));
+  assert(attempts.every(attempt => attempt.status === 'rejected' && /port .*already in use.*service owns it.*restart its host/i.test(attempt.reason.message) && !/VS\s*Code/i.test(attempt.reason.message)));
   assert.equal(servers.length, 1, 'Concurrent launches must share one initial listener attempt.');
   assert.equal(servers[0].listening, false);
   const recovered = new URL((await retry.start()).url);
@@ -447,7 +457,7 @@ test('an occupied configured port fails closed without attaching, falling back, 
   t.after(() => retry.dispose());
   const attempts = await Promise.allSettled([retry.start(),retry.start()]);
   assert(attempts.every(attempt => attempt.status === 'rejected' &&
-    attempt.reason.message.includes(value.url.port) && /already in use.*workspace.*settings.*reload/i.test(attempt.reason.message)));
+    attempt.reason.message.includes(value.url.port) && /already in use.*service owns it.*restart its host/i.test(attempt.reason.message) && !/VS\s*Code/i.test(attempt.reason.message)));
   assert.equal(connections, 0); assert.equal(dispatches, 0);
   const owner = await fetch(value.origin);
   assert.equal(owner.status, 200); assert((await owner.text()).includes('Local office fixture'));
@@ -516,7 +526,7 @@ test('bootstrap rejection sends a fixed safe connection error before ending SSE'
   value.control.connect = async send => { send({ type: 'officeBrowserBootstrap' }); throw new Error('FABRICATED-PRIVATE-BOOTSTRAP-DETAIL'); };
   const stream = await value.events(session);
   assert.deepEqual(await stream.next(), { type: 'officeBrowserBootstrap' });
-  assert.deepEqual(await stream.next(), { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+  assert.deepEqual(await stream.next(), { type: 'officeBrowserConnectionError', error: 'The browser Office could not initialize. Reopen it using your Office launcher.' });
   assert.equal(await stream.next(), undefined);
   await stream.close();
 });
@@ -524,7 +534,7 @@ test('bootstrap rejection sends a fixed safe connection error before ending SSE'
 test('bootstrap timeout sends the safe connection error and disposes a late provider subscription', async t => {
   const value = await fixture(t); const session = await value.connect(); value.control.connectGate = deferred();
   const stream = await value.events(session); assert.equal((await stream.next()).type, 'bootstrap');
-  assert.deepEqual(await stream.next(12_000), { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+  assert.deepEqual(await stream.next(12_000), { type: 'officeBrowserConnectionError', error: 'The browser Office could not initialize. Reopen it using your Office launcher.' });
   assert.equal(await stream.next(), undefined);
   value.control.connectGate.resolve(); await until(() => value.control.disposals === 1);
   assert.equal(value.control.callbacks.size, 0); await stream.close();

@@ -55,7 +55,7 @@ function inside(root: string, target: string): boolean {
 	return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-/** Authenticated UI transport to the VS Code provider, never an OpenCode HTTP proxy. */
+/** Authenticated UI transport to the owning Office host, never an OpenCode HTTP proxy. */
 export class BrowserOfficeServer {
 	private server?: Server;
 	private starting?: Promise<void>;
@@ -75,7 +75,7 @@ export class BrowserOfficeServer {
 	constructor(private readonly options: BrowserOfficeServerOptions) {}
 
 	async start(): Promise<{ url: string }> {
-		if (this.disposed) { throw new Error('The browser office is closed. Open it from a running VS Code office.'); }
+		if (this.disposed) { throw new Error('The browser Office is closed. Reopen it using your Office launcher.'); }
 		if (!this.starting) {
 			const starting: Promise<void> = this.listen().catch(async error => {
 				// A retry must wait until the failed attempt owns no listener or socket.
@@ -86,7 +86,7 @@ export class BrowserOfficeServer {
 			this.starting = starting;
 		}
 		await this.starting;
-		if (this.disposed) { throw new Error('The browser office is closed.'); }
+		if (this.disposed) { throw new Error('The browser Office is closed. Reopen it using your Office launcher.'); }
 		this.expire();
 		if (this.capabilities.size >= SESSION_LIMIT) { throw new Error('Too many browser office launch links are pending. Use a recent link or wait for it to expire.'); }
 		const capability = token();
@@ -99,7 +99,7 @@ export class BrowserOfficeServer {
 		if (!Number.isInteger(port) || port < 0 || port > 65535) { throw new Error('Choose a valid Browser Office port.'); }
 		this.assetsRoot = await realpath(this.options.assetsDirectory);
 		if (!(await stat(this.assetsRoot)).isDirectory()) { throw new Error('The browser office assets are unavailable.'); }
-		if (this.disposed) { throw new Error('The browser office is closed.'); }
+		if (this.disposed) { throw new Error('The browser Office is closed. Reopen it using your Office launcher.'); }
 		const server = createServer({ maxHeaderSize: 8192 }, (request, response) => {
 			void this.handle(request, response).catch(() => {
 				if (!response.headersSent) { this.json(response, 500, { error: 'The office request failed.' }); }
@@ -121,7 +121,7 @@ export class BrowserOfficeServer {
 			const onError = (error: Error): void => {
 				server.off('listening', onListening);
 				reject((error as NodeJS.ErrnoException).code === 'EADDRINUSE'
-					? new Error(`Browser Office port ${port} is already in use. Change the Browser Office port in this workspace’s settings and reload VS Code, then reopen the Office.`)
+					? new Error(`Browser Office port ${port} is already in use. Check which service owns it, or change the Office browser port and restart its host.`)
 					: new Error('Browser Office could not open its local port.'));
 			};
 			const onListening = (): void => {
@@ -172,7 +172,7 @@ export class BrowserOfficeServer {
 		const cookies = (request.headers.cookie ?? '').split(';').map(value => value.trim())
 			.filter(value => value.startsWith(`${this.cookieName}=`));
 		const value = cookies.length === 1 ? this.sessions.get(cookies[0].slice(this.cookieName.length + 1)) : undefined;
-		if (!value || value.expiresAt <= Date.now()) { throw new RequestFailure(401, 'Open a new browser office link from VS Code.'); }
+		if (!value || value.expiresAt <= Date.now()) { throw new RequestFailure(401, 'This browser Office session is missing or expired. Open a fresh link using your Office launcher.'); }
 		return value;
 	}
 	private authorize(request: IncomingMessage): BrowserSession {
@@ -214,7 +214,7 @@ export class BrowserOfficeServer {
 
 	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		this.headers(response);
-		if (this.disposed) { this.json(response, 503, { error: 'The browser office is closed.' }); return; }
+		if (this.disposed) { this.json(response, 503, { error: 'The browser Office is closed. Reopen it using your Office launcher.' }); return; }
 		if (request.headers.host !== new URL(this.origin).host || request.socket.remoteAddress !== '127.0.0.1' ||
 			request.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'host').length !== 1) {
 			this.json(response, 403, { error: 'The browser office accepts only its loopback address.' }); return;
@@ -238,7 +238,7 @@ export class BrowserOfficeServer {
 					if (!Object.hasOwn(body, 'token')) { this.json(response, 200, { csrf: this.session(request).csrf }); return; }
 					const capability = (body as { token?: unknown }).token;
 					if (typeof capability !== 'string' || (this.capabilities.get(capability) ?? 0) <= Date.now()) {
-						throw new RequestFailure(401, 'This launch link is invalid or expired. Open a new link from VS Code.');
+						throw new RequestFailure(401, 'This launch link is invalid or expired. Open a fresh link using your Office launcher.');
 					}
 					let existing: BrowserSession | undefined;
 					try { existing = this.session(request); } catch { /* A valid launch creates a fresh session when the old cookie expired. */ }
@@ -260,7 +260,7 @@ export class BrowserOfficeServer {
 				if (url.pathname === '/api/message' && request.method === 'POST') {
 					this.requireOrigin(request); this.authorize(request);
 					const message = await this.body(request);
-					// Message authority and allowlisting live in the VS Code provider.
+					// Message authority and allowlisting live in the owning Office host.
 					const result = await this.options.dispatch(message);
 					const status = result && typeof result === 'object' && !Array.isArray(result) && Object.hasOwn(result, 'status') &&
 						(result as Record<string, unknown>).status === 'cancelled' ? 'cancelled' : 'completed';
@@ -336,7 +336,7 @@ export class BrowserOfficeServer {
 		stream.response.write(frame);
 	}
 	private connectionFailed(stream: BrowserStream): void {
-		this.send(stream, { type: 'officeBrowserConnectionError', error: 'The browser office could not initialize. Reopen it from VS Code.' });
+		this.send(stream, { type: 'officeBrowserConnectionError', error: 'The browser Office could not initialize. Reopen it using your Office launcher.' });
 		this.closeStream(stream);
 	}
 	private async events(response: ServerResponse, session: BrowserSession): Promise<void> {

@@ -105,7 +105,7 @@ try {
   let finishBootstrap; const heldBootstrap = new Promise(resolve => { finishBootstrap = resolve; });
   provider.ensureReady = async () => heldBootstrap;
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.getByText('Preparing the shared office in VS Code…').waitFor();
+  await page.getByText('Preparing the shared office…').waitFor();
   assert.equal(await page.getByText('Connected to VS Code · Layout is managed in VS Code').count(), 0);
   finishBootstrap(); provider.ensureReady = async () => undefined;
   await page.waitForSelector('canvas[data-office-canvas]');
@@ -352,8 +352,10 @@ try {
   assert(await page.getByRole('dialog').evaluate(node => node.getBoundingClientRect().width <= window.innerWidth));
   const expired = await context.newPage(); expired.setDefaultTimeout(8000);
   await expired.goto(new URL('/#office-token=invalid-fixture-token', url).href);
-  await expired.getByText('Open Browser Office from VS Code to begin a new session.').waitFor();
-  await expired.getByText('Reopen Browser Office from VS Code to reconnect.', { exact: false }).first().waitFor();
+  await expired.getByText('Your Office browser session needs a fresh launch link.').waitFor();
+  await expired.getByText(/Open The Office launcher/).first().waitFor();
+  assert(!/VS Code/.test(await expired.locator('body').innerText()));
+  assert.equal(await expired.locator('a[href^="vscode:"]').count(), 0);
   assert.equal(new URL(expired.url()).hash, ''); assert.equal(provider.browserListeners.size, 1); await expired.close();
   await page.getByRole('button', { name: 'Close agent controls', exact: true }).click(); await page.getByRole('button', { name: 'admin', exact: true }).click();
   await page.route('**/api/message', route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Open Browser Office from VS Code to begin a new session.' }) }));

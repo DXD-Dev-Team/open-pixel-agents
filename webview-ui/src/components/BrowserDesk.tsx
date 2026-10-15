@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { OFFICE_ROLE_LABELS } from '../constants.js'
-import { officeConnection, officeHost, officeViewId, vscode } from '../vscodeApi.js'
+import { officeConnection, officeHost, officeReconnectHint, officeViewId, vscode } from '../vscodeApi.js'
 import type { BrowserActionState } from '../vscodeApi.js'
 import { normalizeDeskWorkers } from './browserDeskWorkers.js'
 import type { BrowserDeskWorker as Worker } from './browserDeskWorkers.js'
@@ -19,7 +19,7 @@ const setupUnavailableCopy = (reconnect = false) => officeHost.getSnapshot().hos
 export function BrowserDesk({ openAgent }: { openAgent: (agentId: number) => boolean }) {
   const host = useSyncExternalStore(officeHost.subscribe, officeHost.getSnapshot)
   const standalone = host.hostKind === 'standalone'
-  const hostName = standalone ? 'Office host' : 'VS Code'
+  const hostName = host.hostKind === 'vscode' ? 'VS Code' : 'Office host'
   const [repositoryForm, setRepositoryForm] = useState<{ path: string; name: string; readOnly: boolean } | null>(null)
   const [questionId, setQuestionId] = useState<string | null>(null)
   const repositoryRequest = useRef<string | undefined>(undefined)
@@ -151,12 +151,13 @@ export function BrowserDesk({ openAgent }: { openAgent: (agentId: number) => boo
   const label = latest ? actionLabels[latest.action] ?? 'Office action' : ''
   const feedback = latest?.state === 'pending' ? !standalone && hostDialogs.has(latest.action) ? `${label}: continue in VS Code. Complete or cancel the dialog there; this browser is waiting for its result.` : `${label}: waiting for ${hostName}…` : latest?.state === 'cancelled' ? `${label} cancelled. You can retry.` : latest?.state === 'completed' ? !standalone && unconfirmedDialogs.has(latest.action) ? `${label}: VS Code dialog finished.` : `${label} completed.` : latest?.error
   return <>
-    <aside className={`office-browser-connection office-connection-${connection.state}`} role="status"><span className="office-connection-dot" />{connection.message}{!connection.connected && !standalone && <a href="vscode://dxd-dev-team.office-desk/open-browser">Reconnect in VS Code</a>}</aside>
+    <aside className={`office-browser-connection office-connection-${connection.state}`} role="status"><span className="office-connection-dot" />{connection.message}{!connection.connected && host.hostKind === 'vscode' && <a href="vscode://dxd-dev-team.office-desk/open-browser">Reconnect in VS Code</a>}</aside>
     {feedback && <aside className={`office-browser-action-feedback office-action-${latest?.state}`} role={latest?.state === 'failed' ? 'alert' : 'status'}>{feedback}</aside>}
     <button className="office-browser-roster-toggle" onClick={() => { setVisible(value => !value); setApiKey(''); setApiProfile(null) }} aria-expanded={visible}>Team · {state.workers.length}{state.attention.length ? ` · ${state.attention.length} need input` : ''}</button>
     {visible && <section className="office-browser-desk" aria-label="Office desk">
       <header><h2>Office desk</h2><button aria-label="Close office desk" onClick={() => { setVisible(false); setApiKey(''); setApiProfile(null) }}>×</button></header>
       <nav aria-label="Office desk panels">{['agents', 'attention', 'repos', 'admin'].map(value => <button key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'attention' ? `Attention (${state.attention.length})` : value}</button>)}</nav>
+      {host.hostKind === 'unknown' ? <p className="office-browser-help">{officeReconnectHint()}</p> : <>
 <p className="office-browser-help">{standalone ? 'Accounts and agents are managed by your local Office host.' : 'Sign-in and repository selection open secure dialogs in VS Code.'}</p>
       {state.setupNeeded && <p className="office-browser-help">{standalone ? 'Connect a profile now, or skip and connect later.' : 'Complete provider setup in VS Code, or skip and connect accounts later.'}<button disabled={!connection.connected || !state.ready || pending('showSetup')} onClick={() => standalone ? (setTab('admin'), beginAccount()) : send('showSetup')}>{standalone ? 'Connect profile' : 'Provider setup in VS Code'}</button>{standalone && <button onClick={() => send('finishSetup')}>Skip for now</button>}</p>}
       {(error || state.error) && <p className="office-browser-error" role="alert">{error || state.error}</p>}
@@ -182,6 +183,7 @@ export function BrowserDesk({ openAgent }: { openAgent: (agentId: number) => boo
             return <article key={account.id} data-account-profile={account.id}><h3>{account.name}<span>{account.connected ? 'connected' : 'not connected'}</span></h3><p>Profile · {account.kind}{account.loginName ? ` · Signed in as ${account.loginName}` : ''}</p><p className="office-browser-help">{assigned.length ? `Used by ${assigned.map(worker => worker.name).join(', ')}. Reconnecting updates the login for all ${assigned.length} assigned agent${assigned.length === 1 ? '' : 's'}.` : 'No agents assigned. Choose this profile when creating or editing an agent.'}</p>{account.kind === 'codex' && !standalone && <label className="office-browser-account-method">Authentication<select aria-label={`Sign-in method for ${account.name}`} value={method} disabled={locked} onChange={event => setAccountMethods(current => ({ ...current, [account.id]: event.target.value as 'api' | 'oauth' }))}><option value="oauth">Sign in with ChatGPT</option><option value="api">{standalone ? 'OpenAI API key' : 'OpenAI API key in VS Code'}</option></select></label>}<div className="office-browser-actions"><button disabled={locked} onClick={() => { if (standalone && (account.kind !== 'codex' || method === 'api')) { if (!host.features.secureBrowserCredentials) { setError('This host does not support browser credential entry.'); return } setApiProfile(account.id); setApiKey('') } else send(standalone ? 'signInAccount' : 'connectAccount', { id: account.id, ...(!standalone ? { method: account.kind === 'codex' ? method : 'api' } : {}) }) }}>{standalone ? account.connected ? 'Reconnect profile' : 'Sign in' : account.connected ? 'Reconnect in VS Code' : 'Sign in in VS Code'}</button><button disabled={locked} onClick={() => standalone ? setRenameProfile({ id: account.id, name: account.name }) : send('renameAccount', { id: account.id })}>Rename profile</button>{account.connected && <button disabled={locked} onClick={() => send('disconnectAccount', { id: account.id })}>Disconnect</button>}<button disabled={locked} onClick={() => send('removeAccount', { id: account.id })}>Remove</button></div></article>
           })}</>}
       </fieldset>
+      </>}
     </section>}
   </>
 }

@@ -2,14 +2,14 @@ declare function acquireVsCodeApi(): { postMessage(msg: unknown): void }
 
 export const isBrowserOffice = typeof acquireVsCodeApi !== 'function'
 export const officeViewId = crypto.randomUUID()
-export interface OfficeHostCapabilities { seatAuthority: 'host' | 'webview'; hostKind: 'standalone' | 'vscode'; features: Record<string, boolean> }
-let host: OfficeHostCapabilities = { seatAuthority: isBrowserOffice ? 'host' : 'webview', hostKind: 'vscode', features: {} }
+export interface OfficeHostCapabilities { seatAuthority: 'host' | 'webview'; hostKind: 'unknown' | 'standalone' | 'vscode'; features: Record<string, boolean> }
+let host: OfficeHostCapabilities = { seatAuthority: isBrowserOffice ? 'host' : 'webview', hostKind: isBrowserOffice ? 'unknown' : 'vscode', features: {} }
 const hostListeners = new Set<() => void>()
 export const officeHost = { subscribe: (listener: () => void) => { hostListeners.add(listener); return () => { hostListeners.delete(listener) } }, getSnapshot: () => host }
 export const hostOwnsSeats = () => host.seatAuthority === 'host'
 export interface OfficeConnection { connected: boolean; state: 'connecting' | 'connected' | 'disconnected' | 'expired'; message: string }
 export interface BrowserActionState { requestId: string; action: string; source?: 'agent' | 'desk' | 'create' | 'settings'; state: 'pending' | 'completed' | 'cancelled' | 'failed'; error?: string }
-let connection: OfficeConnection = { connected: !isBrowserOffice, state: isBrowserOffice ? 'connecting' : 'connected', message: isBrowserOffice ? 'Connecting to VS Code…' : '' }
+let connection: OfficeConnection = { connected: !isBrowserOffice, state: isBrowserOffice ? 'connecting' : 'connected', message: isBrowserOffice ? 'Connecting to the Office host…' : '' }
 const listeners = new Set<() => void>()
 export const officeConnection = { subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }, getSnapshot: () => connection }
 function status(state: OfficeConnection['state'], message: string) {
@@ -22,24 +22,33 @@ window.addEventListener('message', event => {
   if (!isBrowserOffice && host.hostKind === 'standalone') {
     if (message?.type === 'officeBrowserReady') status('connected', 'Connected to Office host')
     if (message?.type === 'officeBrowserBootstrap') status('connecting', 'Preparing the shared Office host…')
-    if (['officeBrowserClosed', 'officeBrowserSessionExpired', 'officeBrowserConnectionError'].includes(message?.type)) status('disconnected', 'Office host connection lost. Reopen the Office host to reconnect.')
+    if (['officeBrowserClosed', 'officeBrowserSessionExpired', 'officeBrowserConnectionError'].includes(message?.type)) status('disconnected', `Office host connection lost. ${officeReconnectHint()}`)
   }
   if (message?.type !== 'officeHostCapabilities') return
   const features: Record<string, boolean> = {}
   for (const [name, value] of Object.entries(message.features ?? {})) if (/^[a-zA-Z][a-zA-Z0-9]{0,39}$/.test(name) && typeof value === 'boolean') features[name] = value
-  host = { seatAuthority: message.seatAuthority === 'host' ? 'host' : 'webview', hostKind: message.hostKind === 'standalone' ? 'standalone' : 'vscode', features }
+  host = { seatAuthority: message.seatAuthority === 'host' ? 'host' : 'webview', hostKind: message.hostKind === 'standalone' || message.hostKind === 'vscode' ? message.hostKind : isBrowserOffice ? 'unknown' : host.hostKind, features }
   if (!isBrowserOffice && host.hostKind === 'standalone') status('connecting', 'Preparing the shared Office host…')
   for (const listener of hostListeners) listener()
+  if (isBrowserOffice && connection.state === 'connecting') status('connecting', preparingMessage())
 })
 
-const ownerName = () => host.hostKind === 'standalone' ? 'Office host' : 'VS Code'
-const reopenHint = () => host.hostKind === 'standalone' ? 'Reopen your Office host link to reconnect.' : 'Reopen Browser Office from VS Code to reconnect.'
+const ownerName = () => host.hostKind === 'vscode' ? 'VS Code' : 'Office host'
+export const officeReconnectHint = () => host.hostKind === 'vscode' ? 'Reopen Browser Office from VS Code to reconnect.' : 'Open The Office launcher (scripts/Open Office.command), or run npm run office:open from the repository, to get a fresh browser link.'
+const preparingMessage = () => host.hostKind === 'vscode' ? 'Preparing the shared office in VS Code…' : host.hostKind === 'standalone' ? 'Preparing the shared Office host…' : 'Preparing the shared office…'
 
 function browserApi(): { postMessage(msg: unknown): void } {
   document.documentElement.dataset.officeBrowser = 'true'
   let csrf: string | undefined
-  let token = new URLSearchParams(window.location.hash.slice(1)).get('office-token') ?? undefined
-  if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  let token: string | undefined
+  const captureLaunchToken = () => {
+    const fragment = new URLSearchParams(window.location.hash.slice(1))
+    if (!fragment.has('office-token')) return false
+    token = fragment.get('office-token') ?? ''
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    return true
+  }
+  captureLaunchToken()
   let ended = false
   let ready = false
   let controller: AbortController | undefined
@@ -58,15 +67,17 @@ function browserApi(): { postMessage(msg: unknown): void } {
   }
   const connect = async () => {
     const current = ++epoch
+    clearTimeout(retry); retry = undefined
+    failActions(); csrf = undefined
     controller?.abort()
     controller = new AbortController()
     const signal = controller.signal
-    status('connecting', 'Connecting to VS Code…')
+    status('connecting', `Connecting to ${ownerName()}…`)
     try {
       const capability = token; token = undefined
       const handshake = await fetch('/api/connect', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(capability !== undefined ? { token: capability } : {}), signal })
       if (ended || current !== epoch) return
-      if (handshake.status === 401 || handshake.status === 403) { status('expired', reopenHint()); return }
+      if (handshake.status === 401 || handshake.status === 403) { status('expired', officeReconnectHint()); return }
       if (!handshake.ok) throw new Error('Connection unavailable.')
       const session = await handshake.json() as { csrf?: unknown }
       if (ended || current !== epoch) return
@@ -74,10 +85,10 @@ function browserApi(): { postMessage(msg: unknown): void } {
       csrf = session.csrf
       const response = await fetch('/api/events', { credentials: 'same-origin', headers: { 'X-Office-CSRF': csrf }, signal })
       if (ended || current !== epoch) return
-      if (response.status === 401 || response.status === 403) { status('expired', reopenHint()); return }
+      if (response.status === 401 || response.status === 403) { csrf = undefined; status('expired', officeReconnectHint()); return }
       if (!response.ok || !response.body) throw new Error('Connection unavailable.')
       if (ended || current !== epoch) return
-      status('connecting', 'Preparing the shared office in VS Code…')
+      status('connecting', preparingMessage())
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let pending = ''
@@ -95,14 +106,14 @@ function browserApi(): { postMessage(msg: unknown): void } {
             if (data) {
               const message = JSON.parse(data) as { type?: string }
               emit(message)
-              if (message.type === 'officeBrowserReady') status('connected', host.hostKind === 'standalone' ? 'Connected to Office host' : 'Connected to VS Code · Layout is managed in VS Code')
+              if (message.type === 'officeBrowserReady') status('connected', host.hostKind === 'vscode' ? 'Connected to VS Code · Layout is managed in VS Code' : 'Connected to Office host')
               if (message.type === 'officeBrowserConnectionError') {
                 failActions(); csrf = undefined; epoch++; controller?.abort()
-                status('disconnected', 'The VS Code office could not initialize. Open Office Desk in VS Code, then reopen Browser Office.'); return
+                status('disconnected', host.hostKind === 'vscode' ? 'The VS Code office could not initialize. Open Office Desk in VS Code, then reopen Browser Office.' : `The Office host could not initialize. ${officeReconnectHint()}`); return
               }
               if (message.type === 'officeBrowserSessionExpired' || message.type === 'officeBrowserClosed') {
                 failActions(); csrf = undefined; epoch++; controller?.abort()
-                status('expired', reopenHint()); return
+                status('expired', officeReconnectHint()); return
               }
             }
           }
@@ -113,12 +124,17 @@ function browserApi(): { postMessage(msg: unknown): void } {
       if (ended || current !== epoch || signal.aborted) return
       failActions()
       csrf = undefined
-      status('disconnected', 'VS Code connection lost. Reconnecting…')
+      status('disconnected', `${ownerName()} connection lost. Reconnecting…`)
       retry = setTimeout(() => { void connect() }, 1500)
     }
   }
+  window.addEventListener('hashchange', () => {
+    if (!captureLaunchToken()) return
+    ended = false
+    if (ready) void connect()
+  })
   window.addEventListener('pagehide', () => { ended = true; epoch++; clearTimeout(retry); controller?.abort(); csrf = undefined; failActions(); status('disconnected', `Reconnect to ${ownerName()} before using these controls.`) })
-  window.addEventListener('pageshow', event => { if (event.persisted && ready) { ended = false; void connect() } })
+  window.addEventListener('pageshow', event => { if (event.persisted && ready) { captureLaunchToken(); ended = false; void connect() } })
   return { postMessage(input) {
     if (!input || typeof input !== 'object') return
     let message = input as Record<string, unknown>
@@ -149,8 +165,8 @@ function browserApi(): { postMessage(msg: unknown): void } {
       actions.delete(key)
       if (!response.ok) {
         const expired = response.status === 401 || response.status === 403
-        if (expired) { failActions(); csrf = undefined; epoch++; controller?.abort(); status('expired', reopenHint()) }
-        const error = typeof body.error === 'string' ? body.error.slice(0, 1000) : 'The office action could not be completed.'
+        if (expired) { failActions(); csrf = undefined; epoch++; controller?.abort(); status('expired', officeReconnectHint()) }
+        const error = expired ? officeReconnectHint() : typeof body.error === 'string' ? body.error.slice(0, 1000) : 'The office action could not be completed.'
         actionError(message, requestId, action, error)
       } else if (body.status === 'completed' || body.status === 'cancelled') actionState(message, requestId, action, body.status)
       else actionError(message, requestId, action, `${ownerName()} did not confirm the action outcome. Reopen Office before retrying.`)

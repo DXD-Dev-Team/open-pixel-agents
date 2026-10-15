@@ -181,6 +181,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 				// Synchronous replay and registration prevent a gap between bootstrap
 				// and live updates. No runtime event or credential history is retained.
 				send({ type: 'officeBrowserBootstrap' });
+				send({ type: 'officeHostCapabilities', hostKind: 'vscode', seatAuthority: 'host', features: {} });
 				this.browserListeners.add(send);
 				try {
 					const sink = { postMessage: (message: Record<string, unknown>) => { if (BROWSER_VIEW_MESSAGES.has(String(message.type))) { send(message); } return Promise.resolve(true); } } as unknown as vscode.Webview;

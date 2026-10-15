@@ -190,7 +190,7 @@ function App() {
   if (!layoutReady) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--vscode-foreground)' }}>
-        {isBrowserOffice ? connection.state === 'expired' ? 'Open Browser Office from VS Code to begin a new session.' : connection.connected ? 'Preparing the shared office…' : 'Waiting for the VS Code office…' : 'Loading the office…'}
+        {isBrowserOffice ? connection.state === 'expired' ? 'Your Office browser session needs a fresh launch link.' : connection.connected ? 'Preparing the shared office…' : connection.state === 'connecting' ? 'Connecting to the office…' : 'The office connection is unavailable.' : 'Loading the office…'}
         {isBrowserOffice && <BrowserDesk key="browser-desk" openAgent={panel.open} />}
       </div>
     )
