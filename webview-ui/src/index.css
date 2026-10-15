@@ -66,3 +66,6 @@ html, body, #root {
 * {
   font-family: 'FS Pixel Sans', sans-serif;
 }
+
+:root[data-office-browser]{--vscode-editor-background:#0f1e25;--vscode-foreground:#e3eeeb;--vscode-font-family:system-ui,sans-serif;--vscode-font-size:13px;--vscode-font-weight:400;--vscode-button-background:#31594f;--vscode-button-foreground:#e3eeeb;color-scheme:dark}
+:root[data-office-browser] button,:root[data-office-browser] select,:root[data-office-browser] textarea{font-family:system-ui,sans-serif}

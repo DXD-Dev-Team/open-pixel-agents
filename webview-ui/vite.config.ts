@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: '../dist/webview',
-    emptyOutDir: false,
+    emptyOutDir: true,
   },
   base: './',
 })

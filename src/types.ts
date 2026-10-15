@@ -1,4 +1,5 @@
 import type * as vscode from 'vscode';
+import type { OfficeWorkerMetadata } from './officeBridge.js';
 
 export interface AgentState {
 	id: number;
@@ -6,6 +7,9 @@ export interface AgentState {
 	sessionId?: string;
 	projectDir: string;
 	serverPort?: number;
+	displayName?: string;
+	readOnly?: boolean;
+	officeMetadata?: OfficeWorkerMetadata;
 	activeToolIds: Set<string>;
 	activeToolStatuses: Map<string, string>;
 	activeToolNames: Map<string, string>;
@@ -22,4 +26,7 @@ export interface PersistedAgent {
 	sessionId?: string;
 	projectDir: string;
 	serverPort?: number;
+	displayName?: string;
+	readOnly?: boolean;
+	officeMetadata?: OfficeWorkerMetadata;
 }

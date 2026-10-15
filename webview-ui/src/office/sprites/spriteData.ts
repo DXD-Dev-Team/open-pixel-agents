@@ -1,6 +1,7 @@
 import type { Direction, SpriteData, FloorColor } from '../types.js'
 import { Direction as Dir } from '../types.js'
 import { adjustSprite } from '../colorize.js'
+import { recolorShirt } from './repoAppearance.js'
 
 // ── Color Palettes ──────────────────────────────────────────────
 const _ = '' // transparent
@@ -1049,8 +1050,8 @@ function hueShiftSprites(sprites: CharacterSprites, hueShift: number): Character
   }
 }
 
-export function getCharacterSprites(paletteIndex: number, hueShift = 0): CharacterSprites {
-  const cacheKey = `${paletteIndex}:${hueShift}`
+export function getCharacterSprites(paletteIndex: number, hueShift = 0, shirtColor?: string): CharacterSprites {
+  const cacheKey = `${paletteIndex}:${hueShift}:${shirtColor ?? ''}`
   const cached = spriteCache.get(cacheKey)
   if (cached) return cached
 
@@ -1112,9 +1113,21 @@ export function getCharacterSprites(paletteIndex: number, hueShift = 0): Charact
     }
   }
 
+  const original = sprites
   // Apply hue shift if non-zero
   if (hueShift !== 0) {
     sprites = hueShiftSprites(sprites, hueShift)
+  }
+
+  if (shirtColor) {
+    const templateShirt = loadedCharacters ? undefined : CHARACTER_PALETTES[paletteIndex % CHARACTER_PALETTES.length].shirt
+    for (const direction of [Dir.DOWN, Dir.UP, Dir.RIGHT, Dir.LEFT]) {
+      const name = direction === Dir.DOWN ? 'down' : direction === Dir.UP ? 'up' : 'right'
+      const tint = (current: SpriteData, source: SpriteData, frame: number) => recolorShirt(source, current, paletteIndex, name, frame, shirtColor, templateShirt)
+      sprites.walk[direction] = sprites.walk[direction].map((sprite, index) => tint(sprite, original.walk[direction][index], [0, 1, 2, 1][index])) as CharacterSprites['walk'][Direction]
+      sprites.typing[direction] = sprites.typing[direction].map((sprite, index) => tint(sprite, original.typing[direction][index], 3 + index)) as CharacterSprites['typing'][Direction]
+      sprites.reading[direction] = sprites.reading[direction].map((sprite, index) => tint(sprite, original.reading[direction][index], 5 + index)) as CharacterSprites['reading'][Direction]
+    }
   }
 
   spriteCache.set(cacheKey, sprites)

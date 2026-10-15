@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useSyncExternalStore } from 'react'
 import { OfficeState } from './office/engine/officeState.js'
 import { OfficeCanvas } from './office/components/OfficeCanvas.js'
 import { ToolOverlay } from './office/components/ToolOverlay.js'
@@ -6,14 +6,17 @@ import { EditorToolbar } from './office/editor/EditorToolbar.js'
 import { EditorState } from './office/editor/editorState.js'
 import { EditTool } from './office/types.js'
 import { isRotatable } from './office/layout/furnitureCatalog.js'
-import { vscode } from './vscodeApi.js'
+import { isBrowserOffice, officeConnection, vscode } from './vscodeApi.js'
 import { useExtensionMessages } from './hooks/useExtensionMessages.js'
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js'
 import { useEditorActions } from './hooks/useEditorActions.js'
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js'
 import { ZoomControls } from './components/ZoomControls.js'
 import { BottomToolbar } from './components/BottomToolbar.js'
+import { AgentPanel } from './components/AgentPanel.js'
+import { useAgentPanel } from './hooks/useAgentPanel.js'
 import { DebugView } from './components/DebugView.js'
+import { BrowserDesk } from './components/BrowserDesk.js'
 
 // Game state lives outside React — updated imperatively by message handlers
 const officeStateRef = { current: null as OfficeState | null }
@@ -122,6 +125,8 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
 }
 
 function App() {
+  const connection = useSyncExternalStore(officeConnection.subscribe, officeConnection.getSnapshot)
+  const panel = useAgentPanel(getOfficeState)
   const editor = useEditorActions(getOfficeState, editorState)
 
   const isEditDirty = useCallback(() => editor.isEditMode && editor.isDirty, [editor.isEditMode, editor.isDirty])
@@ -155,13 +160,15 @@ function App() {
     vscode.postMessage({ type: 'closeAgent', id })
   }, [])
 
+  const openAgentPanel = panel.open
   const handleClick = useCallback((agentId: number) => {
-    // If clicked agent is a sub-agent, focus the parent's terminal instead
+    if (openAgentPanel(agentId)) return
+    // Standalone agents retain their terminal focus behavior.
     const os = getOfficeState()
     const meta = os.subagentMeta.get(agentId)
     const focusId = meta ? meta.parentAgentId : agentId
     vscode.postMessage({ type: 'focusAgent', id: focusId })
-  }, [])
+  }, [openAgentPanel])
 
   const officeState = getOfficeState()
 
@@ -183,13 +190,15 @@ function App() {
   if (!layoutReady) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--vscode-foreground)' }}>
-        Loading...
+        {isBrowserOffice ? connection.state === 'expired' ? 'Your Office browser session needs a fresh launch link.' : connection.connected ? 'Preparing the shared office…' : connection.state === 'connecting' ? 'Connecting to the office…' : 'The office connection is unavailable.' : 'Loading the office…'}
+        {isBrowserOffice && <BrowserDesk key="browser-desk" openAgent={panel.open} />}
       </div>
     )
   }
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+      {isBrowserOffice && <BrowserDesk key="browser-desk" openAgent={panel.open} />}
       <style>{`
         @keyframes open-pixel-agents-pulse {
           0%, 100% { opacity: 1; }
@@ -235,6 +244,7 @@ function App() {
         onToggleEditMode={editor.handleToggleEditMode}
         isDebugMode={isDebugMode}
         onToggleDebugMode={handleToggleDebugMode}
+        getLayout={() => officeState.getLayout()}
       />
 
       {editor.isEditMode && editor.isDirty && (
@@ -302,6 +312,8 @@ function App() {
         panRef={editor.panRef}
         onCloseAgent={handleCloseAgent}
       />
+
+      {panel.target && <AgentPanel {...panel.target} state={panel.state} error={panel.error} actionState={panel.actionState} draft={panel.draft} onDraftChange={panel.setDraft} onAction={panel.action} onClose={panel.close} />}
 
       {isDebugMode && (
         <DebugView

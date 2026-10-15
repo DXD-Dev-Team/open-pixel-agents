@@ -1,7 +1,9 @@
 import { TileType, TILE_SIZE, CharacterState } from '../types.js'
-import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor } from '../types.js'
+import type { TileType as TileTypeVal, FurnitureInstance, Character, SpriteData, Seat, FloorColor, OfficeZone } from '../types.js'
 import { getCachedSprite, getOutlineSprite } from '../sprites/spriteCache.js'
-import { getCharacterSprites, BUBBLE_PERMISSION_SPRITE, BUBBLE_WAITING_SPRITE } from '../sprites/spriteData.js'
+import { getCharacterSprites } from '../sprites/spriteData.js'
+import { repositoryColor } from '../sprites/repoAppearance.js'
+import { activitySummary } from './activitySummary.js'
 import { getCharacterSprite } from './characters.js'
 import { renderMatrixEffect } from './matrixEffect.js'
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles.js'
@@ -20,9 +22,17 @@ import {
   BUTTON_ICON_SIZE_FACTOR,
   BUTTON_LINE_WIDTH_MIN,
   BUTTON_LINE_WIDTH_ZOOM_FACTOR,
-  BUBBLE_FADE_DURATION_SEC,
   BUBBLE_SITTING_OFFSET_PX,
   BUBBLE_VERTICAL_OFFSET_PX,
+  OFFICE_LABEL_FONT_PX,
+  OFFICE_LABEL_LINE_HEIGHT_PX,
+  OFFICE_LABEL_PADDING_PX,
+  OFFICE_LABEL_MAX_NAME_WIDTH_PX,
+  OFFICE_LABEL_MANAGED_VERTICAL_OFFSET_PX,
+  OFFICE_SPEECH_MAX_WIDTH_PX,
+  OFFICE_SPEECH_MAX_LINES,
+  OFFICE_SPEECH_LABEL_GAP_PX,
+  OFFICE_ZONE_FONT_PX,
   FALLBACK_FLOOR_COLOR,
   SEAT_OWN_COLOR,
   SEAT_AVAILABLE_COLOR,
@@ -121,7 +131,8 @@ export function renderScene(
 
   // Characters
   for (const ch of characters) {
-    const sprites = getCharacterSprites(ch.palette, ch.hueShift)
+    const repoId = ch.officeLabel.activeRepoId ?? ch.officeLabel.repoId
+    const sprites = getCharacterSprites(ch.palette, ch.hueShift, repoId ? repositoryColor(repoId) : undefined)
     const spriteData = getCharacterSprite(ch, sprites)
     const cached = getCachedSprite(spriteData, zoom)
     // Sitting offset: shift character down when seated so they visually sit in the chair
@@ -453,59 +464,87 @@ export function renderBubbles(
   offsetX: number,
   offsetY: number,
   zoom: number,
+  connected = true,
 ): void {
   for (const ch of characters) {
-    if (!ch.bubbleType) continue
-
-    if (ch.bubbleType === 'done') {
-      let alpha = 1.0
-      if (ch.bubbleTimer < BUBBLE_FADE_DURATION_SEC) {
-        alpha = ch.bubbleTimer / BUBBLE_FADE_DURATION_SEC
-      }
-      const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
-      const centerX = Math.round(offsetX + ch.x * zoom)
-      const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - 18 * zoom)
-      const bubbleW = Math.round(38 * zoom)
-      const bubbleH = Math.round(12 * zoom)
-      const bubbleX = Math.round(centerX - bubbleW / 2)
-
-      ctx.save()
-      if (alpha < 1.0) ctx.globalAlpha = alpha
-      ctx.fillStyle = '#202020'
-      ctx.fillRect(bubbleX - zoom, bubbleY - zoom, bubbleW + zoom * 2, bubbleH + zoom * 2)
-      ctx.fillStyle = '#f7f7f2'
-      ctx.fillRect(bubbleX, bubbleY, bubbleW, bubbleH)
-      ctx.fillStyle = '#202020'
-      ctx.fillRect(centerX - zoom, bubbleY + bubbleH, zoom * 2, zoom * 2)
-      ctx.font = `${Math.max(8, Math.round(7 * zoom))}px monospace`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText('Done', centerX, bubbleY + bubbleH / 2 + 1)
-      ctx.restore()
-      continue
-    }
-
-    const sprite = ch.bubbleType === 'permission'
-      ? BUBBLE_PERMISSION_SPRITE
-      : BUBBLE_WAITING_SPRITE
-
-    // Compute opacity: permission = full, waiting = fade in last 0.5s
-    let alpha = 1.0
-    if (ch.bubbleType === 'waiting' && ch.bubbleTimer < BUBBLE_FADE_DURATION_SEC) {
-      alpha = ch.bubbleTimer / BUBBLE_FADE_DURATION_SEC
-    }
-
-    const cached = getCachedSprite(sprite, zoom)
-    // Position: centered above the character's head
-    // Character is anchored bottom-center at (ch.x, ch.y), sprite is 16x24
-    // Place bubble above head with a small gap; follow sitting offset
-    const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
-    const bubbleX = Math.round(offsetX + ch.x * zoom - cached.width / 2)
-    const bubbleY = Math.round(offsetY + (ch.y + sittingOff - BUBBLE_VERTICAL_OFFSET_PX) * zoom - cached.height - 1 * zoom)
-
+    const label = ch.officeLabel
+    const scale = Math.max(1, zoom)
+    const lineHeight = OFFICE_LABEL_LINE_HEIGHT_PX * scale
+    const padding = OFFICE_LABEL_PADDING_PX * scale
     ctx.save()
-    if (alpha < 1.0) ctx.globalAlpha = alpha
-    ctx.drawImage(cached, bubbleX, bubbleY)
+    ctx.font = `${OFFICE_LABEL_FONT_PX * scale}px monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const maxNameWidth = OFFICE_LABEL_MAX_NAME_WIDTH_PX * scale
+    let name = label.name
+    if (ctx.measureText(name).width > maxNameWidth) {
+      while (name.length > 1 && ctx.measureText(name + '…').width > maxNameWidth) name = name.slice(0, -1)
+      name += '…'
+    }
+    const scopeName = label.managerForRole === 'builder' ? 'Build' : label.managerForRole === 'security-reviewer' ? 'Security' : label.managerForRole === 'verifier' ? 'Verification' : 'Office'
+    const lines = [name, ...(label.role === 'manager' ? [`${scopeName} manager${(label.managerRepoIds?.length ?? 0) > 1 ? ' · multi-repo' : ''}`] : []), `${label.needsInput ? '✋ ' : ''}${label.status}`]
+    if (label.providerKind === 'codex') {
+      const tokens = Math.max(0, Math.round(label.usageTokens ?? 0))
+      let usage = tokens === 0 ? '0' : `${tokens.toLocaleString()} tokens`
+      if (tokens > 0 && label.estimatedCost !== undefined) usage += ` · ~$${label.estimatedCost.toFixed(4)}`
+      lines.push(usage)
+    }
+    const width = Math.ceil(Math.max(...lines.map((line) => ctx.measureText(line).width)) + padding * 2)
+    const height = Math.ceil(lines.length * lineHeight + padding * 2)
+    const sittingOff = ch.state === CharacterState.TYPE ? BUBBLE_SITTING_OFFSET_PX : 0
+    const centerX = Math.round(offsetX + ch.x * zoom)
+    const x = Math.max(scale, Math.min(ctx.canvas.width - width - scale, Math.round(centerX - width / 2)))
+    const verticalOffset = label.managed ? OFFICE_LABEL_MANAGED_VERTICAL_OFFSET_PX : BUBBLE_VERTICAL_OFFSET_PX
+    const y = Math.max(scale, Math.round(offsetY + (ch.y + sittingOff - verticalOffset) * zoom - height - scale))
+    const accent = label.needsInput ? '#f0b44a' : label.status === 'failed' ? '#ef7373' : '#5f8e82'
+    ctx.fillStyle = accent
+    ctx.fillRect(x - scale, y - scale, width + scale * 2, height + scale * 2)
+    ctx.fillStyle = '#182526'
+    ctx.fillRect(x, y, width, height)
+    ctx.fillStyle = accent
+    ctx.fillRect(centerX - scale, y + height, scale * 2, scale * 2)
+    for (let index = 0; index < lines.length; index++) {
+      ctx.fillStyle = index === 0 ? '#f2f5e8' : index === 1 ? accent : '#b4ccc4'
+      ctx.fillText(lines[index], x + width / 2, y + padding + lineHeight * (index + 0.5))
+    }
+    const speech = connected && label.speech && label.speech.expiresAt > Date.now() ? label.speech : undefined
+    const activeContext = label.activeRepoName && label.activeRepoId !== label.repoId ? `${label.activeRepoName} · ` : ''
+    const bubbleText = speech?.text ?? `${activeContext}${activitySummary(label, ch.currentTool, connected)}`
+    {
+      const maxWidth = OFFICE_SPEECH_MAX_WIDTH_PX * scale
+      const words = bubbleText.split(' ')
+      const spokenLines: string[] = []
+      let current = ''
+      for (const word of words) {
+        const candidate = current ? `${current} ${word}` : word
+        if (current && ctx.measureText(candidate).width > maxWidth) {
+          spokenLines.push(current)
+          current = word
+        } else current = candidate
+      }
+      if (current) spokenLines.push(current)
+      const truncated = spokenLines.length > OFFICE_SPEECH_MAX_LINES
+      spokenLines.length = Math.min(spokenLines.length, OFFICE_SPEECH_MAX_LINES)
+      for (let index = 0; index < spokenLines.length; index++) {
+        let line = spokenLines[index]
+        const suffix = index === spokenLines.length - 1 && truncated ? '…' : ''
+        while (line.length > 1 && ctx.measureText(line + suffix).width > maxWidth) line = line.slice(0, -1)
+        spokenLines[index] = line + suffix
+      }
+      const speechWidth = Math.ceil(Math.max(...spokenLines.map(line => ctx.measureText(line).width)) + padding * 2)
+      const speechHeight = Math.ceil(spokenLines.length * lineHeight + padding * 2)
+      const speechX = Math.max(scale, Math.min(ctx.canvas.width - speechWidth - scale, Math.round(centerX - speechWidth / 2)))
+      const speechY = Math.max(scale, y - speechHeight - OFFICE_SPEECH_LABEL_GAP_PX * scale)
+      ctx.fillStyle = '#587379'
+      ctx.fillRect(speechX - scale, speechY - scale, speechWidth + scale * 2, speechHeight + scale * 2)
+      ctx.fillStyle = '#f2eedc'
+      ctx.fillRect(speechX, speechY, speechWidth, speechHeight)
+      ctx.fillRect(centerX - scale, speechY + speechHeight, scale * 2, scale * 2)
+      ctx.fillStyle = '#24383c'
+      for (let index = 0; index < spokenLines.length; index++) {
+        ctx.fillText(spokenLines[index], speechX + speechWidth / 2, speechY + padding + lineHeight * (index + 0.5))
+      }
+    }
     ctx.restore()
   }
 }
@@ -569,6 +608,8 @@ export function renderFrame(
   tileColors?: Array<FloorColor | null>,
   layoutCols?: number,
   layoutRows?: number,
+  zones?: OfficeZone[],
+  connected = true,
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
@@ -585,6 +626,29 @@ export function renderFrame(
 
   // Draw tiles (floor + wall base color)
   renderTileGrid(ctx, tileMap, offsetX, offsetY, zoom, tileColors, layoutCols)
+
+  // Area signs belong to the same office canvas. Custom layouts may omit them.
+  for (const zone of zones ?? []) {
+    const x = offsetX + (zone.col + zone.width / 2) * TILE_SIZE * zoom
+    const y = offsetY + (zone.row + zone.height - 0.6) * TILE_SIZE * zoom
+    ctx.save()
+    ctx.font = `bold ${OFFICE_ZONE_FONT_PX * zoom}px monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const maxWidth = (zone.width * TILE_SIZE - 8) * zoom
+    const fit = (text: string) => {
+      if (ctx.measureText(text).width <= maxWidth - 12 * zoom) return text
+      while (text.length > 1 && ctx.measureText(`${text}…`).width > maxWidth - 12 * zoom) text = text.slice(0, -1)
+      return `${text}…`
+    }
+    const lines = [zone.repoName, zone.label].filter((text): text is string => !!text).map(fit)
+    const width = Math.max(...lines.map(text => ctx.measureText(text).width)) + 12 * zoom
+    ctx.fillStyle = '#17302dcc'
+    ctx.fillRect(Math.round(x - width / 2), Math.round(y - (lines.length * 5 + 2) * zoom), Math.round(width), (lines.length * 10 + 4) * zoom)
+    ctx.fillStyle = '#c7e5d8'
+    lines.forEach((line, index) => ctx.fillText(line, Math.round(x), Math.round(y + (index * 10 - (lines.length - 1) * 5) * zoom)))
+    ctx.restore()
+  }
 
   // Seat indicators (below furniture/characters, on top of floor)
   if (selection) {
@@ -604,8 +668,38 @@ export function renderFrame(
   const hoveredId = selection?.hoveredAgentId ?? null
   renderScene(ctx, allFurniture, characters, offsetX, offsetY, zoom, selectedId, hoveredId)
 
+  // A chair identifies its computer desk even in an existing custom layout.
+  // Nameplates are render-only; they never rewrite the user's furniture.
+  if (selection) {
+    const named = new Set<string>()
+    for (const seat of selection.seats.values()) {
+      if (!seat.computerDeskId || named.has(seat.computerDeskId)) continue
+      const desk = furniture.find(item => item.uid === seat.computerDeskId)
+      if (!desk) continue
+      const occupant = characters.find(ch => ch.seatId === seat.uid)
+      const repoId = seat.repoId ?? occupant?.officeLabel.repoId
+      const repoName = zones?.find(zone => zone.repoId === repoId)?.repoName ?? occupant?.officeLabel.repoName
+      if (!repoId || !repoName) continue
+      named.add(seat.computerDeskId)
+      ctx.save()
+      ctx.font = `${OFFICE_LABEL_FONT_PX * zoom}px monospace`
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      const maxWidth = Math.max(64, desk.sprite[0].length + 16) * zoom
+      let name = repoName
+      while (name.length > 1 && ctx.measureText(`${name}…`).width > maxWidth) name = name.slice(0, -1)
+      if (name !== repoName) name += '…'
+      const x = Math.round(offsetX + (desk.x + desk.sprite[0].length / 2) * zoom)
+      const y = Math.round(offsetY + (desk.y + desk.sprite.length + 19) * zoom)
+      const width = ctx.measureText(name).width + 8 * zoom
+      ctx.fillStyle = '#17282be8'; ctx.fillRect(x - width / 2, y - 6 * zoom, width, 12 * zoom)
+      ctx.fillStyle = repositoryColor(repoId); ctx.fillRect(x - width / 2, y + 5 * zoom, width, zoom)
+      ctx.fillStyle = '#e7f0ed'; ctx.fillText(name, x, y)
+      ctx.restore()
+    }
+  }
+
   // Speech bubbles (always on top of characters)
-  renderBubbles(ctx, characters, offsetX, offsetY, zoom)
+  renderBubbles(ctx, characters, offsetX, offsetY, zoom, connected)
 
   // Editor overlays
   if (editor) {
